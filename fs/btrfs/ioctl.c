@@ -49,6 +49,7 @@
 #include "print-tree.h"
 #include "volumes.h"
 #include "locking.h"
+#include "txbtrfs.h" // --jel
 
 /* Mask out flags that are inappropriate for the given type of inode. */
 static inline __u32 btrfs_mask_flags(umode_t mode, __u32 flags)
@@ -2375,6 +2376,26 @@ static noinline long btrfs_ioctl_wait_sync(struct file *file, void __user *argp)
 	return btrfs_wait_for_commit(root, transid);
 }
 
+static noinline long btrfs_ioctl_acid_tx_start(struct file * file,
+		void __user * argp)
+{
+	return btrfs_acid_tx_start(file);
+//	return -EOPNOTSUPP;
+}
+
+static noinline long btrfs_ioctl_acid_tx_commit(struct file * file,
+		void __user * argp)
+{
+	return -EOPNOTSUPP;
+}
+
+static noinline long btrfs_ioctl_acid_tx_abort(struct file * file,
+		void __user * argp)
+{
+	return -EOPNOTSUPP;
+}
+
+
 long btrfs_ioctl(struct file *file, unsigned int
 		cmd, unsigned long arg)
 {
@@ -2435,6 +2456,15 @@ long btrfs_ioctl(struct file *file, unsigned int
 		return btrfs_ioctl_start_sync(file, argp);
 	case BTRFS_IOC_WAIT_SYNC:
 		return btrfs_ioctl_wait_sync(file, argp);
+	/*
+	 * TxBtrfs IOCTLs --jel
+	 */
+	case BTRFS_IOC_ACID_TX_START:
+		return btrfs_ioctl_acid_tx_start(file, argp);
+	case BTRFS_IOC_ACID_TX_COMMIT:
+		return btrfs_ioctl_acid_tx_commit(file, argp);
+	case BTRFS_IOC_ACID_TX_ABORT:
+		return btrfs_ioctl_acid_tx_abort(file, argp);
 	}
 
 	return -ENOTTY;

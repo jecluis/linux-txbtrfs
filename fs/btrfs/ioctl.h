@@ -157,6 +157,11 @@ struct btrfs_ioctl_space_args {
 	struct btrfs_ioctl_space_info spaces[0];
 };
 
+struct btrfs_ioctl_acid_start_args
+{
+	__u64 flags;
+};
+
 #define BTRFS_IOC_SNAP_CREATE _IOW(BTRFS_IOCTL_MAGIC, 1, \
 				   struct btrfs_ioctl_vol_args)
 #define BTRFS_IOC_DEFRAG _IOW(BTRFS_IOCTL_MAGIC, 2, \
@@ -203,4 +208,16 @@ struct btrfs_ioctl_space_args {
 				   struct btrfs_ioctl_vol_args_v2)
 #define BTRFS_IOC_SUBVOL_GETFLAGS _IOW(BTRFS_IOCTL_MAGIC, 25, __u64)
 #define BTRFS_IOC_SUBVOL_SETFLAGS _IOW(BTRFS_IOCTL_MAGIC, 26, __u64)
+
+/*
+ * TxBtrfs IOCTLs --jel
+ * 	ACID_TX_START
+ *  ACID_TX_COMMIT
+ *  ACID_TX_ABORT
+ */
+#define BTRFS_IOC_ACID_TX_START _IOWR(BTRFS_IOCTL_MAGIC, 30, \
+					struct btrfs_ioctl_acid_start_args)
+#define BTRFS_IOC_ACID_TX_COMMIT _IOR(BTRFS_IOCTL_MAGIC, 31, u32)
+#define BTRFS_IOC_ACID_TX_ABORT _IOR(BTRFS_IOCTL_MAGIC, 32, u32)
+
 #endif
