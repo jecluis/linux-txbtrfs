@@ -64,6 +64,9 @@ struct btrfs_pending_snapshot {
 	int error;
 	bool readonly;
 	struct list_head list;
+
+	/* txbtrfs --jel */
+	bool acid_tx;
 };
 
 static inline void btrfs_set_trans_block_group(struct btrfs_trans_handle *trans,

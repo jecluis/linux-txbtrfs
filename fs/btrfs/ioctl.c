@@ -2395,6 +2395,41 @@ static noinline long btrfs_ioctl_acid_tx_abort(struct file * file,
 	return -EOPNOTSUPP;
 }
 
+static noinline long btrfs_ioctl_acid_change_root(struct file * file,
+		void __user * argp)
+{
+	struct btrfs_ioctl_acid_change_root_args * args;
+	int ret;
+
+	args = memdup_user(argp, sizeof(*args));
+	if (IS_ERR(args))
+		return PTR_ERR(args);
+
+//	args->target[BTRFS_PATH_NAME_MAX] = '\0';
+//	args->objective[BTRFS_PATH_NAME_MAX] = '\0';
+
+	ret = btrfs_acid_change_root(file, args);
+
+	kfree(args);
+	return ret;
+}
+
+static noinline long btrfs_ioctl_acid_create_snapshot(struct file * file,
+		void __user * argp)
+{
+	struct btrfs_ioctl_acid_create_snapshot_args * args;
+	int ret;
+
+	args = memdup_user(argp, sizeof(*args));
+	if (IS_ERR(args))
+		return PTR_ERR(args);
+
+	ret = btrfs_acid_create_snapshot(file, args);
+
+	kfree(args);
+	return ret;
+}
+
 
 long btrfs_ioctl(struct file *file, unsigned int
 		cmd, unsigned long arg)
@@ -2465,6 +2500,10 @@ long btrfs_ioctl(struct file *file, unsigned int
 		return btrfs_ioctl_acid_tx_commit(file, argp);
 	case BTRFS_IOC_ACID_TX_ABORT:
 		return btrfs_ioctl_acid_tx_abort(file, argp);
+	case BTRFS_IOC_ACID_CHANGE_ROOT:
+		return btrfs_ioctl_acid_change_root(file, argp);
+	case BTRFS_IOC_ACID_CREATE_SNAPSHOT:
+		return btrfs_ioctl_acid_create_snapshot(file, argp);
 	}
 
 	return -ENOTTY;

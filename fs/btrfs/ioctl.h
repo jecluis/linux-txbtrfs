@@ -162,6 +162,17 @@ struct btrfs_ioctl_acid_start_args
 	__u64 flags;
 };
 
+struct btrfs_ioctl_acid_change_root_args
+{
+	__s64 from_fd;
+	__s64 to_fd;
+};
+
+struct btrfs_ioctl_acid_create_snapshot_args
+{
+	__s64 src_fd;
+};
+
 #define BTRFS_IOC_SNAP_CREATE _IOW(BTRFS_IOCTL_MAGIC, 1, \
 				   struct btrfs_ioctl_vol_args)
 #define BTRFS_IOC_DEFRAG _IOW(BTRFS_IOCTL_MAGIC, 2, \
@@ -219,5 +230,9 @@ struct btrfs_ioctl_acid_start_args
 					struct btrfs_ioctl_acid_start_args)
 #define BTRFS_IOC_ACID_TX_COMMIT _IOR(BTRFS_IOCTL_MAGIC, 31, u32)
 #define BTRFS_IOC_ACID_TX_ABORT _IOR(BTRFS_IOCTL_MAGIC, 32, u32)
+#define BTRFS_IOC_ACID_CHANGE_ROOT _IOWR(BTRFS_IOCTL_MAGIC, 33, \
+					struct btrfs_ioctl_acid_change_root_args)
+#define BTRFS_IOC_ACID_CREATE_SNAPSHOT _IOWR(BTRFS_IOCTL_MAGIC, 34, \
+					struct btrfs_ioctl_acid_create_snapshot_args)
 
 #endif

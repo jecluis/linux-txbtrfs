@@ -19,15 +19,26 @@
 #define __BTRFS_TXBTRFS__
 
 #include <linux/fs.h>
+#include <linux/kernel.h>
+#include "ioctl.h"
 
 /* Debug macros */
-#define BTRFS_TX_PRINT(type, prefix, str) printk(type "[%s] %s\n", prefix, str)
-#define BTRFS_TX_DEBUG(str)	BTRFS_TX_PRINT(KERN_DEBUG, "DEBUG", str)
-#define BTRFS_TX_WARN(str) 	BTRFS_TX_PRINT(KERN_WARNING, "WARN", str)
-#define BTRFS_TX_INFO(str) 	BTRFS_TX_PRINT(KERN_INFO, "INFO", str)
+#define BTRFS_TX_PRINT(type, prefix, fmt, args...) \
+	printk(type "[" prefix "] " fmt, ## args)
+
+#define BTRFS_TX_DEBUG(fmt, args...) \
+	BTRFS_TX_PRINT(KERN_DEBUG, "DEBUG", fmt, ## args)
+#define BTRFS_TX_WARN(fmt, args...)  \
+	BTRFS_TX_PRINT(KERN_WARNING, "WARN", fmt, ## args)
+#define BTRFS_TX_INFO(fmt, args...)  \
+	BTRFS_TX_PRINT(KERN_INFO, "INFO", fmt, ## args)
 
 
 int btrfs_acid_tx_start(struct file * file);
+int btrfs_acid_change_root(struct file * file,
+		struct btrfs_ioctl_acid_change_root_args * args);
+int btrfs_acid_create_snapshot(struct file * file,
+		struct btrfs_ioctl_acid_create_snapshot_args * args);
 
 static inline int btrfs_acid_tx_commit(void) { return -EOPNOTSUPP; }
 static inline int btrfs_acid_tx_abort(void) {return -EOPNOTSUPP; }

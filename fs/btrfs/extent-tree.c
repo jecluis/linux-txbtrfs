@@ -3969,11 +3969,18 @@ int btrfs_snap_reserve_metadata(struct btrfs_trans_handle *trans,
 	struct btrfs_root *root = pending->root;
 	struct btrfs_block_rsv *src_rsv = get_block_rsv(trans, root);
 	struct btrfs_block_rsv *dst_rsv = &pending->block_rsv;
+	int required_items = 5;
 	/*
+	 * typical snapshot creation (5 items):
 	 * two for root back/forward refs, two for directory entries
 	 * and one for root of the snapshot.
+	 *
+	 * acid snapshot (2 items): the snapshot root + the snapshot item.
 	 */
-	u64 num_bytes = calc_trans_metadata_size(root, 5);
+	if (pending->acid_tx)
+		required_items = 2;
+
+	u64 num_bytes = calc_trans_metadata_size(root, required_items);
 	dst_rsv->space_info = src_rsv->space_info;
 	return block_rsv_migrate_bytes(src_rsv, dst_rsv, num_bytes);
 }

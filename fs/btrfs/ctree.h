@@ -28,6 +28,7 @@
 #include <linux/wait.h>
 #include <linux/slab.h>
 #include <linux/kobject.h>
+#include <linux/sched.h>
 #include <asm/kmap_types.h>
 #include "extent_io.h"
 #include "extent_map.h"
@@ -636,6 +637,21 @@ struct btrfs_root_ref {
 	__le16 name_len;
 } __attribute__ ((__packed__));
 
+
+/*
+ * ACID Snapshot Items keep the some required information.
+ * (description must evolve over time).
+ * --jel
+ */
+struct btrfs_acid_snapshot_item
+{
+	struct btrfs_disk_key src_key;
+	struct btrfs_disk_key snap_key;
+	__le64 owner_pid;
+
+} __attribute__ ((__packed__));
+
+
 #define BTRFS_FILE_EXTENT_INLINE 0
 #define BTRFS_FILE_EXTENT_REG 1
 #define BTRFS_FILE_EXTENT_PREALLOC 2
@@ -1069,6 +1085,9 @@ struct btrfs_fs_info {
 
 	/* filesystem state */
 	u64 fs_state;
+
+	/* Txbtrfs --jel */
+	struct list_head snapshot_pids;
 };
 
 /*
@@ -1156,6 +1175,12 @@ struct btrfs_root {
 	 * for stat.  It may be used for more later
 	 */
 	struct super_block anon_super;
+
+	/*
+	 * txbtrfs
+	 * --jel
+	 */
+	pid_t owner_pid;
 };
 
 /*
@@ -1238,6 +1263,14 @@ struct btrfs_root {
  * data in the FS
  */
 #define BTRFS_STRING_ITEM_KEY	253
+
+/*
+ * Snapshot Items are specific to TxBtrfs, and keep metadata related with
+ * the creation of the snapshot, the source subvolume, the PID it is assigned
+ * to, and much, much more. (description should evolve over time) --jel
+ */
+#define BTRFS_ACID_SNAPSHOT_ITEM_KEY	280
+
 
 #define BTRFS_MOUNT_NODATASUM		(1 << 0)
 #define BTRFS_MOUNT_NODATACOW		(1 << 1)
@@ -1326,6 +1359,35 @@ static inline void btrfs_set_##name(type *s, u##bits val)		\
 {									\
 	s->member = cpu_to_le##bits(val);				\
 }
+
+/* acid snapshot item --jel */
+BTRFS_SETGET_FUNCS(snapshot_owner_pid, struct btrfs_acid_snapshot_item, \
+			owner_pid, 64);
+
+static inline void btrfs_snapshot_src_key(struct extent_buffer * eb,
+		struct btrfs_acid_snapshot_item * item, struct btrfs_disk_key * key)
+{
+	read_eb_member(eb, item, struct btrfs_acid_snapshot_item, src_key, key);
+}
+
+static inline void btrfs_set_snapshot_src_key(struct extent_buffer * eb,
+		struct btrfs_acid_snapshot_item * item, struct btrfs_disk_key * key)
+{
+	write_eb_member(eb, item, struct btrfs_acid_snapshot_item, src_key, key);
+}
+
+static inline void btrfs_snapshot_snap_key(struct extent_buffer * eb,
+		struct btrfs_acid_snapshot_item * item, struct btrfs_disk_key * key)
+{
+	read_eb_member(eb, item, struct btrfs_acid_snapshot_item, snap_key, key);
+}
+
+static inline void btrfs_set_snapshot_snap_key(struct extent_buffer * eb,
+		struct btrfs_acid_snapshot_item * item, struct btrfs_disk_key * key)
+{
+	write_eb_member(eb, item, struct btrfs_acid_snapshot_item, snap_key, key);
+}
+
 
 BTRFS_SETGET_FUNCS(device_type, struct btrfs_dev_item, type, 64);
 BTRFS_SETGET_FUNCS(device_total_bytes, struct btrfs_dev_item, total_bytes, 64);

@@ -945,6 +945,9 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 
 	trans->block_rsv = &pending->block_rsv;
 
+	if (pending->acid_tx)
+		goto avoid_dir_items;
+
 	dentry = pending->dentry;
 	parent = dget_parent(dentry);
 	parent_inode = parent->d_inode;
@@ -966,6 +969,8 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 					 dentry->d_name.len * 2);
 	ret = btrfs_update_inode(trans, parent_root, parent_inode);
 	BUG_ON(ret);
+
+avoid_dir_items:
 
 	record_root_in_trans(trans, root);
 	btrfs_set_root_last_snapshot(&root->root_item, trans->transid);
@@ -994,6 +999,12 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 	free_extent_buffer(tmp);
 	BUG_ON(ret);
 
+	if (pending->acid_tx)
+	{
+
+		goto avoid_root_refs;
+	}
+
 	/*
 	 * insert root back/forward references
 	 */
@@ -1003,6 +1014,8 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 				 dentry->d_name.name, dentry->d_name.len);
 	BUG_ON(ret);
 	dput(parent);
+
+avoid_root_refs:
 
 	key.offset = (u64)-1;
 	pending->snap = btrfs_read_fs_root_no_name(root->fs_info, &key);
