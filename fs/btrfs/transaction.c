@@ -27,6 +27,7 @@
 #include "transaction.h"
 #include "locking.h"
 #include "tree-log.h"
+#include "txbtrfs.h"
 
 #define BTRFS_ROOT_TRANS_TAG 0
 
@@ -1001,7 +1002,9 @@ avoid_dir_items:
 
 	if (pending->acid_tx)
 	{
-
+		ret = btrfs_insert_snapshot_item(trans, tree_root,
+				&root->root_key, &key);
+		BUG_ON(ret);
 		goto avoid_root_refs;
 	}
 

@@ -27,6 +27,123 @@
 #include "disk-io.h"
 #include "txbtrfs.h"
 
+static void print_key(struct btrfs_key * key)
+{
+	printk(KERN_DEBUG "key [%llu %d %llu]\n",
+			key->objectid, key->type, key->offset);
+
+}
+
+static int is_acid_subvol(struct btrfs_root * root)
+{
+	u64 flags;
+
+	down_write(&root->fs_info->subvol_sem);
+	flags = btrfs_root_flags(&root->root_item);
+	up_write(&root->fs_info->subvol_sem);
+
+	BTRFS_TX_DEBUG("Subvolume flags = %llu\n", flags);
+
+	return (flags & BTRFS_ROOT_SUBVOL_ACID);
+}
+
+/* based on btrfs_inode_by_name */
+static struct btrfs_root * get_root_by_name(struct btrfs_inode * inode,
+		struct qstr * name)
+{
+	struct btrfs_root * objective = NULL;
+	struct btrfs_dir_item *di;
+	struct btrfs_path *path;
+	struct btrfs_root * root = inode->root;
+	struct btrfs_key location;
+
+	path = btrfs_alloc_path();
+	BUG_ON(!path);
+
+	di = btrfs_lookup_dir_item(NULL, root, path, inode->vfs_inode.i_ino,
+			name->name, name->len, 0);
+/*	if (IS_ERR(di))
+//		ret = PTR_ERR(di);
+		goto out_err;
+
+	if (!di || IS_ERR(di))
+		goto out_err;
+*/
+	if (!di || IS_ERR(di))
+	{
+		BTRFS_TX_DEBUG("(get_root_by_name) dir item is NULL or ERR: %xll\n",
+				(unsigned long long) di);
+		goto out_err;
+	}
+
+	btrfs_dir_item_key_to_cpu(path->nodes[0], di, &location);
+	btrfs_free_path(path);
+
+	objective = btrfs_lookup_fs_root(root->fs_info, location.objectid);
+
+/*out:
+	btrfs_free_path(path);
+	return ret;
+out_err:
+	location->objectid = 0;
+	goto out;*/
+out:
+out_err:
+
+	return objective;
+}
+
+int btrfs_acid_d_hash(struct dentry * dentry, struct qstr * str)
+{
+	struct inode * inode = dentry->d_inode;
+	struct btrfs_inode * our_inode = BTRFS_I(inode);
+	struct btrfs_root * root = our_inode->root;
+	char * default_to = "_snap";
+	char * final_name;
+	struct btrfs_root * str_root;
+
+	BTRFS_TX_DEBUG("[hash] dentry name: %.*s, str: %.*s\n",
+			dentry->d_name.len, dentry->d_name.name,
+			str->len, str->name);
+
+	if (!is_acid_subvol(root))
+	{
+		BTRFS_TX_DEBUG("[hash] Parent not TX Subvolume. Keeping hash.");
+//		return 0;
+	} else
+		BTRFS_TX_DEBUG("[hash] Parent is a TX Subvolume. Changing hash.");
+
+	str_root = get_root_by_name(our_inode, str);
+	if (!str_root)
+	{
+		BTRFS_TX_DEBUG("[hash] Root By Name returned an error.");
+		goto out;
+	}
+	print_key(&str_root->root_key);
+	if (is_acid_subvol(str_root))
+		BTRFS_TX_DEBUG("[hash] Accessing a TX Subvolume.");
+	else
+		BTRFS_TX_DEBUG("[hash] Accessing a Non-TX Subvolume.");
+
+
+	final_name = kzalloc(str->len+5, GFP_KERNEL);
+	if (!final_name)
+		return -ENOMEM;
+
+	memcpy(final_name, str->name, str->len);
+	memcpy(final_name+str->len, default_to, 5);
+
+	str->name = final_name;
+	str->len += 5;
+	str->hash = full_name_hash(str->name, str->len);
+
+	BTRFS_TX_DEBUG("[hash] Changed name: %.*s, hash: %u\n",
+			str->len, str->name, str->hash);
+out:
+	return 0;
+}
+
+
 int btrfs_acid_tx_start(struct file * file)
 {
 //	printk(KERN_DEBUG "[debug] Btrfs ACID Tx Start\n");
@@ -311,6 +428,75 @@ err_fput:
 	return ret;
 }
 
+int btrfs_insert_snapshot_item(struct btrfs_trans_handle * trans,
+		struct btrfs_root * tree_root, struct btrfs_key * src_key,
+		struct btrfs_key * snap_key)
+{
+	struct btrfs_acid_snapshot_item * item;
+	struct btrfs_key key;
+	int ret = 0;
+	struct btrfs_root * snap_root;
+
+	if (!trans || !tree_root || !src_key || !snap_key)
+		return -EINVAL;
+
+	item = kzalloc(sizeof(*item), GFP_KERNEL);
+	if (!item)
+		return -ENOMEM;
+
+	btrfs_cpu_key_to_disk(&item->snap_key, snap_key);
+	btrfs_cpu_key_to_disk(&item->src_key, src_key);
+	item->owner_pid = cpu_to_le64(current->pid);
+
+	key.objectid = src_key->objectid;
+	key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
+	key.offset = snap_key->objectid;
+
+	ret = btrfs_insert_item(trans, tree_root, &key, item, sizeof(*item));
+	BUG_ON(ret);
+
+	/* just checks if the inserted root item actually allows us to get to
+	 * the tree */
+//	snap_root = btrfs_read_fs_root_no_name(tree_root->fs_info, &key);
+//	BUG_ON(IS_ERR(snap_root));
+
+	return ret;
+}
+
+struct file* file_open(const char* path, int flags, int rights) {
+    struct file* filp = NULL;
+    mm_segment_t oldfs;
+    int err = 0;
+
+    oldfs = get_fs();
+    set_fs(get_ds());
+    filp = filp_open(path, flags, rights);
+    set_fs(oldfs);
+    if(IS_ERR(filp)) {
+    	err = PTR_ERR(filp);
+    	return NULL;
+    }
+    return filp;
+}
+
+void file_close(struct file* file) {
+    filp_close(file, NULL);
+}
+
+int btrfs_acid_file_open(struct inode * inode, struct file * file)
+{
+	struct dentry * fdentry = file->f_path.dentry;
+	struct btrfs_inode * our_inode = BTRFS_I(inode);
+
+	BTRFS_TX_DEBUG("inode: ino = %lu, file: %.*s\n",
+			inode->i_ino, fdentry->d_name.len, fdentry->d_name.name);
+	print_key(&our_inode->location);
+
+
+
+	return 0;
+}
+
 int btrfs_acid_create_snapshot(struct file * file,
 		struct btrfs_ioctl_acid_create_snapshot_args * args)
 {
@@ -318,10 +504,18 @@ int btrfs_acid_create_snapshot(struct file * file,
 	struct btrfs_root * src_root;
 	struct btrfs_pending_snapshot * pending;
 	struct btrfs_trans_handle * trans;
-	int ret;
+	int ret = 0;
+	char * filename = "/home/dweller/txbtrfs.mnt/S1";
+	struct file * f;
 
 	if (!args)
 		return -EINVAL;
+
+	f = file_open(filename, 0, O_RDONLY);
+	file_close(f);
+
+	if (1)
+		return 0;
 
 	src_file = fget(args->src_fd);
 	if (!src_file)
@@ -335,6 +529,8 @@ int btrfs_acid_create_snapshot(struct file * file,
 		ret = -ENOMEM;
 		goto err_put_file;
 	}
+
+	down_read(&src_root->fs_info->subvol_sem);
 
 	btrfs_init_block_rsv(&pending->block_rsv);
 	pending->acid_tx = 1;
@@ -362,6 +558,8 @@ int btrfs_acid_create_snapshot(struct file * file,
 
 	btrfs_orphan_cleanup(pending->snap);
 
+	up_read(&src_root->fs_info->subvol_sem);
+
 err_free_pending:
 	kfree(pending);
 err_put_file:
@@ -370,3 +568,63 @@ err_put_file:
 	return ret;
 }
 
+int btrfs_acid_subvol_flags(struct file * file,
+		struct btrfs_ioctl_acid_subvol_flags_args * args)
+{
+	int ret = 0;
+	struct inode * inode;
+	struct btrfs_inode * sub_inode;
+	struct btrfs_root * sub_root;
+	u64 initial_flags, final_flags;
+	struct btrfs_trans_handle * trans;
+
+	if (!args)
+		return -EINVAL;
+
+	/* TODO: check for permission to do this */
+
+	inode = fdentry(file)->d_inode;
+
+	if (inode->i_ino != BTRFS_FIRST_FREE_OBJECTID)
+		return -EINVAL;
+
+	sub_inode = BTRFS_I(inode);
+	sub_root = sub_inode->root;
+
+	down_write(&sub_root->fs_info->subvol_sem);
+	initial_flags = btrfs_root_flags(&sub_root->root_item);
+	final_flags = initial_flags;
+
+	BTRFS_TX_DEBUG("Subvol initial flags: %llu\n", initial_flags);
+
+	if (args->set)
+		final_flags |= BTRFS_ROOT_SUBVOL_ACID;
+	else
+		final_flags &= ~BTRFS_ROOT_SUBVOL_ACID;
+
+	BTRFS_TX_DEBUG("Subvol final flags: %llu\n", final_flags);
+
+	btrfs_set_root_flags(&sub_root->root_item, final_flags);
+
+	trans = btrfs_start_transaction(sub_root, 1);
+	if (IS_ERR(trans))
+	{
+		ret = PTR_ERR(trans);
+		goto out_reset_flags;
+	}
+
+	ret = btrfs_update_root(trans, sub_root->fs_info->tree_root,
+			&sub_root->root_key, &sub_root->root_item);
+
+	btrfs_commit_transaction(trans, sub_root);
+
+out_reset_flags:
+	if (ret)
+	{
+		BTRFS_TX_DEBUG("Resetting Subvol flags\n");
+		btrfs_set_root_flags(&sub_root->root_item, initial_flags);
+	}
+
+	up_write(&sub_root->fs_info->subvol_sem);
+	return ret;
+}

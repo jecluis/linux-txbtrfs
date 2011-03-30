@@ -612,6 +612,7 @@ struct btrfs_dir_item {
 } __attribute__ ((__packed__));
 
 #define BTRFS_ROOT_SUBVOL_RDONLY	(1ULL << 0)
+#define BTRFS_ROOT_SUBVOL_ACID		(1ULL << 1)
 
 struct btrfs_root_item {
 	struct btrfs_inode_item inode;
@@ -1259,17 +1260,17 @@ struct btrfs_root {
 #define BTRFS_CHUNK_ITEM_KEY	228
 
 /*
- * string items are for debugging.  They just store a short string of
- * data in the FS
- */
-#define BTRFS_STRING_ITEM_KEY	253
-
-/*
  * Snapshot Items are specific to TxBtrfs, and keep metadata related with
  * the creation of the snapshot, the source subvolume, the PID it is assigned
  * to, and much, much more. (description should evolve over time) --jel
  */
-#define BTRFS_ACID_SNAPSHOT_ITEM_KEY	280
+#define BTRFS_ACID_SNAPSHOT_ITEM_KEY	240
+
+/*
+ * string items are for debugging.  They just store a short string of
+ * data in the FS
+ */
+#define BTRFS_STRING_ITEM_KEY	253
 
 
 #define BTRFS_MOUNT_NODATASUM		(1 << 0)

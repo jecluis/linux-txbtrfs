@@ -39,6 +39,13 @@ int btrfs_acid_change_root(struct file * file,
 		struct btrfs_ioctl_acid_change_root_args * args);
 int btrfs_acid_create_snapshot(struct file * file,
 		struct btrfs_ioctl_acid_create_snapshot_args * args);
+int btrfs_insert_snapshot_item(struct btrfs_trans_handle * trans,
+		struct btrfs_root * tree_root, struct btrfs_key * src_key,
+		struct btrfs_key * snap_key);
+int btrfs_acid_file_open(struct inode * inode, struct file * file);
+int btrfs_acid_subvol_flags(struct file * file,
+		struct btrfs_ioctl_acid_subvol_flags_args * args);
+int btrfs_acid_d_hash(struct dentry * dentry, struct qstr * str);
 
 static inline int btrfs_acid_tx_commit(void) { return -EOPNOTSUPP; }
 static inline int btrfs_acid_tx_abort(void) {return -EOPNOTSUPP; }

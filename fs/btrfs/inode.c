@@ -50,6 +50,7 @@
 #include "tree-log.h"
 #include "compression.h"
 #include "locking.h"
+#include "txbtrfs.h"
 
 struct btrfs_iget_args {
 	u64 ino;
@@ -7286,6 +7287,7 @@ static const struct file_operations btrfs_dir_file_operations = {
 #endif
 	.release        = btrfs_release_file,
 	.fsync		= btrfs_sync_file,
+	.open		= btrfs_acid_file_open,
 };
 
 static struct extent_io_ops btrfs_extent_io_ops = {
@@ -7369,4 +7371,5 @@ static const struct inode_operations btrfs_symlink_inode_operations = {
 
 const struct dentry_operations btrfs_dentry_operations = {
 	.d_delete	= btrfs_dentry_delete,
+	.d_hash		= btrfs_acid_d_hash,
 };

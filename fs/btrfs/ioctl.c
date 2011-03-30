@@ -301,6 +301,7 @@ static noinline int create_subvol(struct btrfs_root *root,
 	btrfs_set_root_refs(&root_item, 1);
 	btrfs_set_root_used(&root_item, leaf->len);
 	btrfs_set_root_last_snapshot(&root_item, 0);
+	btrfs_set_root_flags(&root_item, 0);
 
 	memset(&root_item.drop_progress, 0, sizeof(root_item.drop_progress));
 	root_item.drop_level = 0;
@@ -2430,6 +2431,21 @@ static noinline long btrfs_ioctl_acid_create_snapshot(struct file * file,
 	return ret;
 }
 
+static noinline long btrfs_ioctl_acid_subvol_flags(struct file * file,
+		void __user * argp)
+{
+	struct btrfs_ioctl_acid_subvol_flags_args * args;
+	int ret;
+
+	args = memdup_user(argp, sizeof(*args));
+	if (IS_ERR(args))
+		return PTR_ERR(args);
+
+	ret = btrfs_acid_subvol_flags(file, args);
+	kfree(args);
+	return ret;
+}
+
 
 long btrfs_ioctl(struct file *file, unsigned int
 		cmd, unsigned long arg)
@@ -2504,6 +2520,8 @@ long btrfs_ioctl(struct file *file, unsigned int
 		return btrfs_ioctl_acid_change_root(file, argp);
 	case BTRFS_IOC_ACID_CREATE_SNAPSHOT:
 		return btrfs_ioctl_acid_create_snapshot(file, argp);
+	case BTRFS_IOC_ACID_SUBVOL_FLAGS:
+		return btrfs_ioctl_acid_subvol_flags(file, argp);
 	}
 
 	return -ENOTTY;

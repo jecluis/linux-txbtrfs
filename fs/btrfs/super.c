@@ -542,6 +542,7 @@ setup_root:
 		 * everything gets cleaned up properly on unmount.
 		 */
 		dentry = d_alloc(sb->s_root, &name);
+//		dentry->d_op = &btrfs_dentry_operations;
 		if (!dentry) {
 			iput(inode);
 			return ERR_PTR(-ENOMEM);
@@ -603,6 +604,7 @@ static int btrfs_fill_super(struct super_block *sb,
 		goto fail_close;
 	}
 
+	root_dentry->d_op = &btrfs_dentry_operations;
 	sb->s_root = root_dentry;
 
 	save_mount_options(sb, data);
