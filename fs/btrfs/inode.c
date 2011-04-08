@@ -4175,12 +4175,67 @@ static struct dentry *btrfs_lookup(struct inode *dir, struct dentry *dentry,
 				   struct nameidata *nd)
 {
 	struct inode *inode;
+	struct dentry * tmp_dentry;
+//	struct btrfs_inode * our_inode = NULL;
+//	struct btrfs_root * root = NULL;
+//	struct btrfs_acid_ctl * ctl;
+//	struct btrfs_acid_snapshot * snap;
 
+	BTRFS_TX_DBG("LOOKUP", "dentry: %.*s\n",
+			dentry->d_name.len, dentry->d_name.name);
+
+//	root = BTRFS_I(dir)->root;
+//	snap = btrfs_acid_current_snapshot(&root->fs_info->acid_ctl);
+//	if (!snap)
+//		goto no_tx;
+
+//	if (dentry->d_name.hash == snap->path.hash)
+
+//no_tx:
 	inode = btrfs_lookup_dentry(dir, dentry);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-	return d_splice_alias(inode, dentry);
+//	our_inode = BTRFS_I(dir);
+//	root = our_inode->root;
+//	ctl = &root->fs_info->acid_ctl;
+//
+//	down_read(&ctl->sv_sem);
+//	if (ctl->sv->path.hash == dentry->d_name.hash)
+//	{
+//		if (dir->i_ino == ctl->sv->parent_ino) /* It is our TXSV. */
+//			;
+//
+//		This should go to a d_revalidate().
+//	}
+
+//	if (inode && (inode->i_ino == BTRFS_FIRST_FREE_OBJECTID))
+//	{
+//		our_inode = BTRFS_I(inode);
+//		root = our_inode->root;
+//
+//		BTRFS_TX_DBG("LOOKUP", "our_inode: [%llu %d %llu]\n",
+//				our_inode->location.objectid, our_inode->location.type,
+//				our_inode->location.offset);
+//
+//		if (btrfs_is_acid_subvol(root))
+//		{
+//			BTRFS_TX_DBG("LOOKUP", "Accessing a TX Subvolume.\n");
+//		}
+//
+//	}
+
+	tmp_dentry = d_splice_alias(inode, dentry);
+	if (!tmp_dentry)
+		BTRFS_TX_DBG("LOOKUP", "dentry splice alias returned NULL\n");
+	else
+		BTRFS_TX_DBG("LOOKUP", "dentry spliced alias: name = %.*s, inode = %p\n",
+			tmp_dentry->d_name.len, tmp_dentry->d_name.name,
+			tmp_dentry->d_inode);
+	BTRFS_TX_DBG("LOOKUP", "dentry name = %.*s, inode = %p\n",
+			dentry->d_name.len, dentry->d_name.name, dentry->d_inode);
+
+	return tmp_dentry;
 }
 
 static unsigned char btrfs_filetype_table[] = {
@@ -7372,4 +7427,5 @@ static const struct inode_operations btrfs_symlink_inode_operations = {
 const struct dentry_operations btrfs_dentry_operations = {
 	.d_delete	= btrfs_dentry_delete,
 	.d_hash		= btrfs_acid_d_hash,
+	.d_revalidate = btrfs_acid_d_revalidate,
 };

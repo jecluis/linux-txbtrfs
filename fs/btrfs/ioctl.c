@@ -2425,13 +2425,13 @@ static noinline long btrfs_ioctl_acid_create_snapshot(struct file * file,
 	if (IS_ERR(args))
 		return PTR_ERR(args);
 
-	ret = btrfs_acid_create_snapshot(file, args);
+	ret = btrfs_acid_create_snapshot_by_ioctl(file, args);
 
 	kfree(args);
 	return ret;
 }
 
-static noinline long btrfs_ioctl_acid_subvol_flags(struct file * file,
+static noinline long btrfs_ioctl_acid_set_tx_subvol(struct file * file,
 		void __user * argp)
 {
 	struct btrfs_ioctl_acid_subvol_flags_args * args;
@@ -2441,11 +2441,16 @@ static noinline long btrfs_ioctl_acid_subvol_flags(struct file * file,
 	if (IS_ERR(args))
 		return PTR_ERR(args);
 
-	ret = btrfs_acid_subvol_flags(file, args);
+	ret = btrfs_acid_set_tx_subvol(file, args);
 	kfree(args);
 	return ret;
 }
 
+static noinline long btrfs_ioctl_acid_test(struct file * file,
+		void __user * argp)
+{
+	return -EOPNOTSUPP;
+}
 
 long btrfs_ioctl(struct file *file, unsigned int
 		cmd, unsigned long arg)
@@ -2521,7 +2526,7 @@ long btrfs_ioctl(struct file *file, unsigned int
 	case BTRFS_IOC_ACID_CREATE_SNAPSHOT:
 		return btrfs_ioctl_acid_create_snapshot(file, argp);
 	case BTRFS_IOC_ACID_SUBVOL_FLAGS:
-		return btrfs_ioctl_acid_subvol_flags(file, argp);
+		return btrfs_ioctl_acid_set_tx_subvol(file, argp);
 	}
 
 	return -ENOTTY;

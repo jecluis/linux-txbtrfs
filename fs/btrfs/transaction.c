@@ -946,8 +946,8 @@ static noinline int create_pending_snapshot(struct btrfs_trans_handle *trans,
 
 	trans->block_rsv = &pending->block_rsv;
 
-	if (pending->acid_tx)
-		goto avoid_dir_items;
+//	if (pending->acid_tx)
+//		goto avoid_dir_items;
 
 	dentry = pending->dentry;
 	parent = dget_parent(dentry);
@@ -1005,7 +1005,7 @@ avoid_dir_items:
 		ret = btrfs_insert_snapshot_item(trans, tree_root,
 				&root->root_key, &key);
 		BUG_ON(ret);
-		goto avoid_root_refs;
+//		goto avoid_root_refs;
 	}
 
 	/*

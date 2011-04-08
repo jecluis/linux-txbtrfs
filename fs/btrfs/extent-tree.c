@@ -3975,10 +3975,15 @@ int btrfs_snap_reserve_metadata(struct btrfs_trans_handle *trans,
 	 * two for root back/forward refs, two for directory entries
 	 * and one for root of the snapshot.
 	 *
-	 * acid snapshot (2 items): the snapshot root + the snapshot item.
+	 * #notanymore
+	 * 	acid snapshot (2 items): the snapshot root + the snapshot item.
+	 *
+	 * acid snapshot (6 items):
+	 * two for root back/forward refs, two for directory entries
+	 * and one for root of the snapshot, plus one for the snapshot item.
 	 */
 	if (pending->acid_tx)
-		required_items = 2;
+		required_items = 6;
 
 	u64 num_bytes = calc_trans_metadata_size(root, required_items);
 	dst_rsv->space_info = src_rsv->space_info;

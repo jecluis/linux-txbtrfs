@@ -20,6 +20,7 @@
 #include "disk-io.h"
 #include "hash.h"
 #include "transaction.h"
+#include <linux/kernel.h>
 
 /*
  * insert a name into a directory, doing overflow properly if there is a hash
@@ -140,6 +141,8 @@ int btrfs_insert_dir_item(struct btrfs_trans_handle *trans, struct btrfs_root
 	key.objectid = dir;
 	btrfs_set_key_type(&key, BTRFS_DIR_ITEM_KEY);
 	key.offset = btrfs_name_hash(name, name_len);
+	printk(KERN_DEBUG "<DIR-ITEM> INSERT: name = %.*s, len: %d, hash: %llu\n",
+			name_len, name, name_len, key.offset);
 
 	path = btrfs_alloc_path();
 	path->leave_spinning = 1;
@@ -147,6 +150,8 @@ int btrfs_insert_dir_item(struct btrfs_trans_handle *trans, struct btrfs_root
 	data_size = sizeof(*dir_item) + name_len;
 	dir_item = insert_with_overflow(trans, root, path, &key, data_size,
 					name, name_len);
+	printk(KERN_DEBUG "<DIR-ITEM> INSERT (overflow #1): hash: %llu\n",
+				key.offset);
 	if (IS_ERR(dir_item)) {
 		ret = PTR_ERR(dir_item);
 		if (ret == -EEXIST)
@@ -178,6 +183,8 @@ second_insert:
 	key.offset = index;
 	dir_item = insert_with_overflow(trans, root, path, &key, data_size,
 					name, name_len);
+	printk(KERN_DEBUG "<DIR-ITEM> INSERT (overflow #2): hash: %llu\n",
+			key.offset);
 	if (IS_ERR(dir_item)) {
 		ret2 = PTR_ERR(dir_item);
 		goto out;
@@ -193,6 +200,9 @@ second_insert:
 	write_extent_buffer(leaf, name, name_ptr, name_len);
 	btrfs_mark_buffer_dirty(leaf);
 out:
+	printk(KERN_DEBUG "<DIR-ITEM> INSERT: name = %.*s, len: %d, hash: %llu\n",
+			name_len, name, name_len, location->offset);
+	printk(KERN_DEBUG "<DIR-ITEM> INSERT: ret = %d, ret2 = %d\n", ret, ret2);
 	btrfs_free_path(path);
 	if (ret)
 		return ret;
@@ -235,6 +245,13 @@ struct btrfs_dir_item *btrfs_lookup_dir_item(struct btrfs_trans_handle *trans,
 
 	leaf = path->nodes[0];
 	btrfs_item_key_to_cpu(leaf, &found_key, path->slots[0]);
+
+	printk(KERN_DEBUG "<DIR-ITEM> LOOKUP: name: %.*s, "
+			"found key [%llu %d %llu], "
+			"dir = %llu, item_key_type: %d, offset = %llu\n",
+			name_len, name,
+			found_key.objectid, found_key.type, found_key.offset,
+			dir, BTRFS_DIR_ITEM_KEY, key.offset);
 
 	if (found_key.objectid != dir ||
 	    btrfs_key_type(&found_key) != BTRFS_DIR_ITEM_KEY ||

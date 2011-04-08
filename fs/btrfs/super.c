@@ -788,6 +788,9 @@ static int btrfs_get_sb(struct file_system_type *fs_type, int flags,
 		s->s_flags |= MS_ACTIVE;
 	}
 
+	/* txbtrfs --jel */
+	btrfs_acid_init(btrfs_sb(s)->fs_info);
+
 	root = get_default_root(s, subvol_objectid);
 	if (IS_ERR(root)) {
 		error = PTR_ERR(root);

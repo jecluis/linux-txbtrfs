@@ -33,6 +33,7 @@
 #include "extent_io.h"
 #include "extent_map.h"
 #include "async-thread.h"
+#include "txbtrfs.h"
 
 struct btrfs_trans_handle;
 struct btrfs_transaction;
@@ -652,6 +653,17 @@ struct btrfs_acid_snapshot_item
 
 } __attribute__ ((__packed__));
 
+/*
+ * Transactional Subvolume Items indicate which subvolumes are to considered
+ * as having transactional accesses.
+ */
+struct btrfs_acid_tx_subvol_item
+{
+	struct btrfs_disk_key subvol_key;
+	__le64 parent_dirid;
+	__le16 name_len;
+} __attribute__ ((__packed__));
+
 
 #define BTRFS_FILE_EXTENT_INLINE 0
 #define BTRFS_FILE_EXTENT_REG 1
@@ -1088,7 +1100,7 @@ struct btrfs_fs_info {
 	u64 fs_state;
 
 	/* Txbtrfs --jel */
-	struct list_head snapshot_pids;
+	struct btrfs_acid_ctl acid_ctl;
 };
 
 /*
@@ -1265,6 +1277,7 @@ struct btrfs_root {
  * to, and much, much more. (description should evolve over time) --jel
  */
 #define BTRFS_ACID_SNAPSHOT_ITEM_KEY	240
+#define BTRFS_ACID_TX_SUBVOL_ITEM_KEY	241
 
 /*
  * string items are for debugging.  They just store a short string of
@@ -1389,6 +1402,24 @@ static inline void btrfs_set_snapshot_snap_key(struct extent_buffer * eb,
 	write_eb_member(eb, item, struct btrfs_acid_snapshot_item, snap_key, key);
 }
 
+/* TxBtrfs -- Transactional Subvolume Item. --jel */
+BTRFS_SETGET_FUNCS(tx_subvol_parent_dirid, \
+		struct btrfs_acid_tx_subvol_item, parent_dirid, 64);
+BTRFS_SETGET_FUNCS(tx_subvol_name_len, \
+		struct btrfs_acid_tx_subvol_item, name_len, 16);
+
+static inline void btrfs_tx_subvol_key(struct extent_buffer * eb,
+		struct btrfs_acid_tx_subvol_item * item, struct btrfs_disk_key * key)
+{
+	read_eb_member(eb, item, struct btrfs_acid_tx_subvol_item, subvol_key, key);
+}
+
+static inline void btrfs_set_tx_subvol_key(struct extent_buffer * eb,
+		struct btrfs_acid_tx_subvol_item * item, struct btrfs_disk_key * key)
+{
+	write_eb_member(eb, item, struct btrfs_acid_tx_subvol_item, \
+			subvol_key, key);
+}
 
 BTRFS_SETGET_FUNCS(device_type, struct btrfs_dev_item, type, 64);
 BTRFS_SETGET_FUNCS(device_total_bytes, struct btrfs_dev_item, total_bytes, 64);
