@@ -489,7 +489,7 @@ int btrfs_acid_d_hash(struct dentry * dentry, struct qstr * str)
 
 	/* We've got the snapshot. Map the bastard. */
 //	str = &snap->path; /* Is this really enough? Seems way too easy... */
-	kfree(str->name);
+//	kfree(str->name);
 	str->name = kzalloc(snap->path.len, GFP_NOFS);
 	BUG_ON(!str->name);
 	memcpy(str->name, snap->path.name, snap->path.len);

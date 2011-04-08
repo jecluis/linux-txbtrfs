@@ -7309,6 +7309,11 @@ static int btrfs_permission(struct inode *inode, int mask)
 	return generic_permission(inode, mask, btrfs_check_acl);
 }
 
+void * btrfs_acid_follow_link(struct dentry * d, struct nameidata * nd)
+{
+	return page_follow_link_light(d, nd);
+}
+
 static const struct inode_operations btrfs_dir_inode_operations = {
 	.getattr	= btrfs_getattr,
 	.lookup		= btrfs_lookup,
@@ -7414,7 +7419,8 @@ static const struct inode_operations btrfs_special_inode_operations = {
 };
 static const struct inode_operations btrfs_symlink_inode_operations = {
 	.readlink	= generic_readlink,
-	.follow_link	= page_follow_link_light,
+//	.follow_link	= page_follow_link_light,
+	.follow_link = btrfs_acid_follow_link,
 	.put_link	= page_put_link,
 	.getattr	= btrfs_getattr,
 	.permission	= btrfs_permission,
