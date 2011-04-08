@@ -1019,6 +1019,8 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 			pending->snap->root_key.type,
 			pending->snap->root_key.offset);
 
+//	pending->snap->owner_pid = current->pid;
+
 //	if (IS_ERR(snap))
 //		goto out_destroy_path;
 

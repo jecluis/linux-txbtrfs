@@ -4176,53 +4176,20 @@ static struct dentry *btrfs_lookup(struct inode *dir, struct dentry *dentry,
 {
 	struct inode *inode;
 	struct dentry * tmp_dentry;
-//	struct btrfs_inode * our_inode = NULL;
-//	struct btrfs_root * root = NULL;
-//	struct btrfs_acid_ctl * ctl;
-//	struct btrfs_acid_snapshot * snap;
 
 	BTRFS_TX_DBG("LOOKUP", "dentry: %.*s\n",
 			dentry->d_name.len, dentry->d_name.name);
 
-//	root = BTRFS_I(dir)->root;
-//	snap = btrfs_acid_current_snapshot(&root->fs_info->acid_ctl);
-//	if (!snap)
-//		goto no_tx;
-
-//	if (dentry->d_name.hash == snap->path.hash)
-
-//no_tx:
 	inode = btrfs_lookup_dentry(dir, dentry);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-//	our_inode = BTRFS_I(dir);
-//	root = our_inode->root;
-//	ctl = &root->fs_info->acid_ctl;
-//
-//	down_read(&ctl->sv_sem);
-//	if (ctl->sv->path.hash == dentry->d_name.hash)
+//	if (inode)
 //	{
-//		if (dir->i_ino == ctl->sv->parent_ino) /* It is our TXSV. */
-//			;
-//
-//		This should go to a d_revalidate().
-//	}
-
-//	if (inode && (inode->i_ino == BTRFS_FIRST_FREE_OBJECTID))
-//	{
-//		our_inode = BTRFS_I(inode);
-//		root = our_inode->root;
-//
-//		BTRFS_TX_DBG("LOOKUP", "our_inode: [%llu %d %llu]\n",
-//				our_inode->location.objectid, our_inode->location.type,
-//				our_inode->location.offset);
-//
-//		if (btrfs_is_acid_subvol(root))
-//		{
-//			BTRFS_TX_DBG("LOOKUP", "Accessing a TX Subvolume.\n");
-//		}
-//
+//		root = BTRFS_I(inode)->root;
+//		if (root->owner_pid > 0)
+//			if (root->owner_pid != current->pid)
+//				inode = NULL;
 //	}
 
 	tmp_dentry = d_splice_alias(inode, dentry);
@@ -7309,11 +7276,6 @@ static int btrfs_permission(struct inode *inode, int mask)
 	return generic_permission(inode, mask, btrfs_check_acl);
 }
 
-void * btrfs_acid_follow_link(struct dentry * d, struct nameidata * nd)
-{
-	return page_follow_link_light(d, nd);
-}
-
 static const struct inode_operations btrfs_dir_inode_operations = {
 	.getattr	= btrfs_getattr,
 	.lookup		= btrfs_lookup,
@@ -7419,8 +7381,7 @@ static const struct inode_operations btrfs_special_inode_operations = {
 };
 static const struct inode_operations btrfs_symlink_inode_operations = {
 	.readlink	= generic_readlink,
-//	.follow_link	= page_follow_link_light,
-	.follow_link = btrfs_acid_follow_link,
+	.follow_link	= page_follow_link_light,
 	.put_link	= page_put_link,
 	.getattr	= btrfs_getattr,
 	.permission	= btrfs_permission,
