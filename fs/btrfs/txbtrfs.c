@@ -34,7 +34,7 @@
 
 /*
  * TxBtrfs aims at introducing Transactional Semantics into the file
- * system, using Btrfs as its coding base.
+ * system, using Btrfs as its coding base. (to be expanded)
  */
 
 static struct btrfs_acid_snapshot *
