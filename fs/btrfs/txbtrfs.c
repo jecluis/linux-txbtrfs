@@ -32,6 +32,11 @@
 #include "txbtrfs-misc.h"
 #include "hash.h"
 
+/*
+ * TxBtrfs aims at introducing Transactional Semantics into the file
+ * system, using Btrfs as its coding base.
+ */
+
 static struct btrfs_acid_snapshot *
 __snapshot_add(struct btrfs_root * root, struct qstr * path);
 static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
