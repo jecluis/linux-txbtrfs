@@ -37,6 +37,9 @@
  * system, using Btrfs as its coding base. (to be expanded)
  */
 
+static int __snapshot_set_perms(struct inode * dir, struct dentry * dentry);
+static struct dentry *
+__snapshot_instantiate_dentry(struct dentry * dentry);
 static struct btrfs_acid_snapshot *
 __snapshot_add(struct btrfs_root * root, struct qstr * path);
 static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
@@ -939,6 +942,7 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	struct btrfs_acid_snapshot * snap = NULL;
 	struct btrfs_acid_ctl * ctl;
 	struct qstr snap_path;
+	struct dentry * snap_dentry;
 	struct inode * dir;
 	int ret = 0;
 
@@ -1023,6 +1027,15 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 			pending->snap->root_key.objectid,
 			pending->snap->root_key.type,
 			pending->snap->root_key.offset);
+
+	snap_dentry = __snapshot_instantiate_dentry(pending->dentry);
+	if (!snap_dentry || IS_ERR(snap_dentry))
+	{
+		// TODO: Do error handling.
+		BTRFS_TX_DBG("CREATE-SNAPSHOT", "This is going to blow!\n");
+		goto out;
+	}
+	__snapshot_set_perms(dir, snap_dentry);
 
 //	pending->snap->owner_pid = current->pid;
 
@@ -1210,6 +1223,45 @@ out:
 	return 0;
 }
 
+static int __snapshot_set_perms(struct inode * dir, struct dentry * dentry)
+{
+	struct iattr attrs;
+	struct inode * inode;
+
+	attrs.ia_uid = current_uid();
+	attrs.ia_gid = current_gid();
+
+	attrs.ia_mode = S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
+	attrs.ia_valid = ATTR_MODE | ATTR_UID | ATTR_GID;
+
+	BTRFS_TX_DBG("SNAPSHOT-SET-PERMS",
+			"dentry = %.*s, mode = %d, valid = %d, uid = %d, gid = %d\n",
+			dentry->d_name.len, dentry->d_name.name,
+			attrs.ia_mode, attrs.ia_valid, attrs.ia_uid, attrs.ia_gid);
+
+	return notify_change(dentry, &attrs);
+}
+
+static struct dentry *
+__snapshot_instantiate_dentry(struct dentry * dentry)
+{
+	struct dentry * parent;
+	struct inode * inode;
+
+	parent = dget_parent(dentry);
+	inode = btrfs_lookup_dentry(parent->d_inode, dentry);
+	dput(parent);
+	if (IS_ERR(inode))
+	{
+		dentry = PTR_ERR(inode);
+		goto fail;
+	}
+	BUG_ON(!inode);
+	d_instantiate(dentry, inode);
+
+fail:
+	return dentry;
+}
 
 static struct btrfs_acid_snapshot *
 __snapshot_add(struct btrfs_root * root, struct qstr * path)
@@ -1246,7 +1298,7 @@ __snapshot_add(struct btrfs_root * root, struct qstr * path)
 		kfree(snap);
 		return ERR_PTR(-ENOMEM);
 	}
-	memcpy(snap->path.name, path->name, path->len);
+	memcpy((void *) snap->path.name, (void *) path->name, path->len);
 	snap->path.len = path->len;
 	snap->path.hash = path->hash;
 	snap->hash = btrfs_name_hash(path->name, path->len);
