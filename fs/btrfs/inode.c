@@ -4160,6 +4160,9 @@ static int btrfs_dentry_delete(struct dentry *dentry)
 {
 	struct btrfs_root *root;
 
+	BTRFS_TX_DBG("DENTRY-DELETE", "deleting dentry = %.*s\n",
+			dentry->d_name.len, dentry->d_name.name);
+
 	if (!dentry->d_inode && !IS_ROOT(dentry))
 		dentry = dentry->d_parent;
 

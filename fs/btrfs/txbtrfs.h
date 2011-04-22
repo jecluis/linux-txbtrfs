@@ -34,11 +34,13 @@ struct btrfs_acid_snapshot
 {
 	struct btrfs_root * root;
 	struct btrfs_key * location; /* may be null if 'root' != null */
+	struct btrfs_key * src_location;
 	struct qstr path;
 	unsigned long long hash;
 	u64 gen;
 	pid_t owner_pid;
-	unsigned long parent_ino;
+	u64 parent_ino;
+	u64 dir_index;
 };
 
 /* struct btrfs_acid_ctl, to be kept as a field in 'struct btrfs_fs_info',
@@ -80,7 +82,8 @@ int btrfs_acid_create_snapshot_by_ioctl(struct file * file,
 		struct btrfs_ioctl_acid_create_snapshot_args * args);
 int btrfs_insert_snapshot_item(struct btrfs_trans_handle * trans,
 		struct btrfs_root * tree_root, struct btrfs_key * src_key,
-		struct btrfs_key * snap_key);
+		struct btrfs_key * snap_key,
+		u64 dir, struct dentry * dentry, u64 dir_index);
 int btrfs_acid_file_open(struct inode * inode, struct file * file);
 int btrfs_acid_set_tx_subvol(struct file * file,
 		struct btrfs_ioctl_acid_subvol_flags_args * args);

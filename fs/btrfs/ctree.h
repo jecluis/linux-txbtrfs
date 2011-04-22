@@ -650,7 +650,9 @@ struct btrfs_acid_snapshot_item
 	struct btrfs_disk_key src_key;
 	struct btrfs_disk_key snap_key;
 	__le64 owner_pid;
-
+	__le64 dirid;
+	__le64 dir_index;
+	__le16 name_len;
 } __attribute__ ((__packed__));
 
 /*
@@ -1285,6 +1287,13 @@ struct btrfs_root {
  */
 #define BTRFS_STRING_ITEM_KEY	253
 
+/* TxBtrfs Snapshot flags */
+#define BTRFS_ACID_SNAPSHOT_INITIAL 	(1 << 0)
+#define BTRFS_ACID_SNAPSHOT_PRECOMMIT 	(1 << 1)
+#define BTRFS_ACID_SNAPSHOT_COMMIT 		(1 << 2)
+#define BTRFS_ACID_SNAPSHOT_ABORT 		(1 << 3)
+#define BTRFS_ACID_SNAPSHOT_DEAD 		(1 << 4)
+
 
 #define BTRFS_MOUNT_NODATASUM		(1 << 0)
 #define BTRFS_MOUNT_NODATACOW		(1 << 1)
@@ -1376,7 +1385,13 @@ static inline void btrfs_set_##name(type *s, u##bits val)		\
 
 /* acid snapshot item --jel */
 BTRFS_SETGET_FUNCS(snapshot_owner_pid, struct btrfs_acid_snapshot_item, \
-			owner_pid, 64);
+		owner_pid, 64);
+BTRFS_SETGET_FUNCS(snapshot_dirid, struct btrfs_acid_snapshot_item, \
+		dirid, 64);
+BTRFS_SETGET_FUNCS(snapshot_dir_index, struct btrfs_acid_snapshot_item, \
+		dir_index, 64);
+BTRFS_SETGET_FUNCS(snapshot_name_len, struct btrfs_acid_snapshot_item, \
+		name_len, 16);
 
 static inline void btrfs_snapshot_src_key(struct extent_buffer * eb,
 		struct btrfs_acid_snapshot_item * item, struct btrfs_disk_key * key)
