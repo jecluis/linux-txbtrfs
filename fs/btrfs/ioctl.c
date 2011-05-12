@@ -2387,7 +2387,7 @@ static noinline long btrfs_ioctl_acid_tx_start(struct file * file,
 static noinline long btrfs_ioctl_acid_tx_commit(struct file * file,
 		void __user * argp)
 {
-	return -EOPNOTSUPP;
+	return btrfs_acid_tx_commit(file);
 }
 
 static noinline long btrfs_ioctl_acid_tx_abort(struct file * file,

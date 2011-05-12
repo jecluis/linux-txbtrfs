@@ -1894,6 +1894,10 @@ static int submit_extent_page(int rw, struct extent_io_tree *tree,
 	int old_compressed = prev_bio_flags & EXTENT_BIO_COMPRESSED;
 	size_t page_size = min_t(size_t, size, PAGE_CACHE_SIZE);
 
+	BTRFS_SUB_DBG(CALL, "%s page = %p, offset = %lu\n",
+			(rw == READ ? "READ" : "WRITE"),
+			page, offset);
+
 	if (bio_ret && *bio_ret) {
 		bio = *bio_ret;
 		if (old_compressed)

@@ -1191,11 +1191,8 @@ struct btrfs_root {
 	 */
 	struct super_block anon_super;
 
-	/*
-	 * txbtrfs
-	 * --jel
-	 */
-	pid_t owner_pid;
+//	struct btrfs_acid_root_ctl acid;
+	struct btrfs_acid_snapshot * snap;
 };
 
 /*
@@ -2649,6 +2646,35 @@ int btrfs_prealloc_file_range_trans(struct inode *inode,
 				    loff_t actual_len, u64 *alloc_hint);
 extern const struct dentry_operations btrfs_dentry_operations;
 
+/* these methods became non-static so we can use them in txbtrfs. */
+int btrfs_create(struct inode *dir, struct dentry *dentry,
+			int mode, struct nameidata *nd);
+int btrfs_dentry_delete(struct dentry *dentry);
+long btrfs_fallocate(struct inode *inode, int mode,
+			    loff_t offset, loff_t len);
+int btrfs_fiemap(struct inode *inode, struct fiemap_extent_info *fieinfo,
+		__u64 start, __u64 len);
+int btrfs_getattr(struct vfsmount *mnt,
+			 struct dentry *dentry, struct kstat *stat);
+int btrfs_link(struct dentry *old_dentry, struct inode *dir,
+		      struct dentry *dentry);
+struct dentry *btrfs_lookup(struct inode *dir, struct dentry *dentry,
+				   struct nameidata *nd);
+int btrfs_mkdir(struct inode *dir, struct dentry *dentry, int mode);
+int btrfs_mknod(struct inode *dir, struct dentry *dentry,
+			int mode, dev_t rdev);
+int btrfs_permission(struct inode *inode, int mask);
+int btrfs_real_readdir(struct file *filp, void *dirent,
+			      filldir_t filldir);
+int btrfs_rename(struct inode *old_dir, struct dentry *old_dentry,
+			   struct inode *new_dir, struct dentry *new_dentry);
+int btrfs_rmdir(struct inode *dir, struct dentry *dentry);
+int btrfs_setattr(struct dentry *dentry, struct iattr *attr);
+int btrfs_symlink(struct inode *dir, struct dentry *dentry,
+			 const char *symname);
+void btrfs_truncate(struct inode *inode);
+int btrfs_unlink(struct inode *dir, struct dentry *dentry);
+
 /* ioctl.c */
 long btrfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 void btrfs_update_iflags(struct inode *inode);
@@ -2665,6 +2691,12 @@ int btrfs_drop_extents(struct btrfs_trans_handle *trans, struct inode *inode,
 int btrfs_mark_extent_written(struct btrfs_trans_handle *trans,
 			      struct inode *inode, u64 start, u64 end);
 int btrfs_release_file(struct inode *inode, struct file *file);
+
+/* these methods became non-static so we can use them in txbtrfs. */
+ssize_t btrfs_file_aio_write(struct kiocb *iocb,
+				    const struct iovec *iov,
+				    unsigned long nr_segs, loff_t pos);
+int btrfs_file_mmap(struct file	*filp, struct vm_area_struct *vma);
 
 /* tree-defrag.c */
 int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,

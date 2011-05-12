@@ -843,7 +843,7 @@ again:
 	return 0;
 }
 
-static ssize_t btrfs_file_aio_write(struct kiocb *iocb,
+ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 				    const struct iovec *iov,
 				    unsigned long nr_segs, loff_t pos)
 {
@@ -867,6 +867,8 @@ static ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 	int buffered = 0;
 	int copied = 0;
 	int dirty_pages = 0;
+
+	BTRFS_SUB_DBG(CALL, "");
 
 	will_write = ((file->f_flags & O_DSYNC) || IS_SYNC(inode) ||
 		      (file->f_flags & O_DIRECT));
@@ -1130,6 +1132,7 @@ done:
 
 int btrfs_release_file(struct inode *inode, struct file *filp)
 {
+	BTRFS_SUB_DBG(CALL, "");
 	/*
 	 * ordered_data_close is set by settattr when we are about to truncate
 	 * a file from a non-zero size to a zero size.  This tries to
@@ -1170,6 +1173,7 @@ int btrfs_sync_file(struct file *file, int datasync)
 	int ret = 0;
 	struct btrfs_trans_handle *trans;
 
+	BTRFS_SUB_DBG(CALL, "");
 
 	/* we wait first, since the writeback may change the inode */
 	root->log_batch++;
@@ -1247,11 +1251,14 @@ out:
 static const struct vm_operations_struct btrfs_file_vm_ops = {
 	.fault		= filemap_fault,
 	.page_mkwrite	= btrfs_page_mkwrite,
+	.open = btrfs_acid_vm_open,
 };
 
-static int btrfs_file_mmap(struct file	*filp, struct vm_area_struct *vma)
+int btrfs_file_mmap(struct file	*filp, struct vm_area_struct *vma)
 {
 	struct address_space *mapping = filp->f_mapping;
+
+	BTRFS_SUB_DBG(CALL, "");
 
 	if (!mapping->a_ops->readpage)
 		return -ENOEXEC;
@@ -1271,7 +1278,8 @@ const struct file_operations btrfs_file_operations = {
 	.splice_read	= generic_file_splice_read,
 	.aio_write	= btrfs_file_aio_write,
 	.mmap		= btrfs_file_mmap,
-	.open		= generic_file_open,
+//	.open		= generic_file_open,
+	.open		= btrfs_acid_file_open,
 	.release	= btrfs_release_file,
 	.fsync		= btrfs_sync_file,
 	.unlocked_ioctl	= btrfs_ioctl,
