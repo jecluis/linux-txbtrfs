@@ -46,6 +46,8 @@ struct btrfs_acid_snapshot
 	u64 gen;
 	pid_t owner_pid;
 
+	atomic_t usage_count;
+
 	struct rw_semaphore known_pids_sem;
 	struct list_head known_pids;
 
@@ -83,7 +85,8 @@ struct btrfs_acid_ctl
 //#define __TXBTRFS_DEBUG_FS__
 #define __TXBTRFS_DEBUG_LOG__
 #define __TXBTRFS_DEBUG_ACCESS__
-#define __TXBTRFS_DEBUG_COMMIT__
+#define __TXBTRFS_DEBUG_TX_COMMIT__
+#define __TXBTRFS_DEBUG_TX_START__
 #endif /* __TXBTRFS_DEBUG__ */
 
 #ifdef __TXBTRFS_DEBUG_TX__
@@ -138,12 +141,19 @@ struct btrfs_acid_ctl
 #define BTRFS_ACCESS_DBG(prefix, fmt, args...) do {} while (0)
 #endif /* __TXBTRFS_DEBUG_ACCESS__ */
 
-#ifdef __TXBTRFS_DEBUG_COMMIT__
-#define BTRFS_COMMIT_DBG(prefix, fmt, args...) \
-	printk(KERN_DEBUG "<COMMIT> (%s): " fmt, prefix, ## args)
+#ifdef __TXBTRFS_DEBUG_TX_COMMIT__
+#define BTRFS_TX_COMMIT_DBG(prefix, fmt, args...) \
+	printk(KERN_DEBUG "<TX-COMMIT> (%s): " fmt, prefix, ## args)
 #else
-#define BTRFS_COMMIT_DBG(prefix, fmt, args...) do {} while (0)
-#endif /* __TXBTRFS_DEBUG_COMMIT__ */
+#define BTRFS_TX_COMMIT_DBG(prefix, fmt, args...) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_TX_COMMIT__ */
+
+#ifdef __TXBTRFS_DEBUG_TX_START__
+#define BTRFS_TX_START_DBG(prefix, fmt, args...) \
+	printk(KERN_DEBUG "<TX-START> (%s): " fmt, prefix, ## args)
+#else
+#define BTRFS_TX_START_DBG(prefix, fmt, args...) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_TX_START__ */
 
 #ifdef __TXBTRFS_DEBUG__
 #define BTRFS_SUB_DBG(sub, fmt, args...) \

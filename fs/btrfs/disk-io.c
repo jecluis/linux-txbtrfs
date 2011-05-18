@@ -1358,8 +1358,6 @@ static void btrfs_unplug_io_fn(struct backing_dev_info *bdi, struct page *page)
 	struct address_space *mapping;
 	u64 offset;
 
-	BTRFS_SUB_DBG(CALL, "used by block_sync_page, from btrfs_aops\n");
-
 	/* the generic O_DIRECT read code does this */
 	if (1 || !page) {
 		__unplug_io_fn(bdi, page);

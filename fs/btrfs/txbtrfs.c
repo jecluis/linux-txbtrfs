@@ -451,6 +451,8 @@ int btrfs_acid_allow(struct inode * inode)
 {
 	struct btrfs_acid_snapshot * snap;
 	struct btrfs_inode * our;
+	struct task_struct * curr_task = get_current();
+	int ancestor_pid;
 
 	if (!inode)
 		return -EINVAL;
@@ -459,7 +461,11 @@ int btrfs_acid_allow(struct inode * inode)
 	if (!our->root->snap)
 		return -EINVAL;
 
-	if (current->pid != our->root->snap->owner_pid)
+	snap = btrfs_acid_find_valid_ancestor(&our->root->fs_info->acid_ctl,
+			curr_task, NULL);
+	if (!snap)
+		return -ENOENT;
+	if (snap->owner_pid != our->root->snap->owner_pid)
 		return -ENOENT;
 
 	return 0;
@@ -698,10 +704,11 @@ int btrfs_acid_tx_start(struct file * file)
 	struct btrfs_root * root;
 	struct btrfs_acid_snapshot * snap = NULL;
 	pid_t curr_pid = current->pid;
+	int usage_count;
 
 	sv_dentry = dget(fdentry(file));
 
-	BTRFS_SUB_DBG(TX, "Starting transaction on %.*s for process %d\n",
+	BTRFS_SUB_DBG(TX_START, "Starting transaction on %.*s for process %d\n",
 			sv_dentry->d_name.len, sv_dentry->d_name.name, curr_pid);
 
 	/* First of all, we must check if 'sv_dentry' actually is a valid
@@ -718,17 +725,19 @@ int btrfs_acid_tx_start(struct file * file)
 	root = BTRFS_I(sv_dentry->d_inode)->root;
 
 	/* check if we have a transactional parent.
-	 * If not, return -ENOPERM; otherwise, return success. */
+	 * If not, return -EPERM; otherwise, return success. */
 	if (root->snap) {
-		if (!btrfs_has_acid_ancestor(&root->fs_info->acid_ctl, get_current()))
-			ret = -ENOPERM;
+		if (!btrfs_has_acid_ancestor(&root->fs_info->acid_ctl, get_current())) {
+			ret = -EPERM;
+			goto out_err;
+		}
 		goto out;
 	}
 
 	if (!btrfs_is_acid_subvol(root))
 	{
 		ret = -EINVAL;
-		goto out;
+		goto out_err;
 	}
 
 	/* Okay, we are accessing a TXSV. Next step: create a snapshot for our
@@ -738,16 +747,29 @@ int btrfs_acid_tx_start(struct file * file)
 	if (IS_ERR(snap))
 	{
 		ret = PTR_ERR(snap);
-		goto out;
+		goto out_err;
 	}
 
-	BTRFS_SUB_DBG(TX, "Transaction %d mapped onto %.*s\n",
-			snap->owner_pid, snap->path.len, snap->path.name);
 
 	/* The snapshot is created, added to the tree, everything is either
 	 * fine or not. Anyway, we have nothing else to do, so we return. */
 
 out:
+	/* If snap is not-NULL, then we have created a snapshot; if it is NULL,
+	 * but the current root is a snapshot, then we are accessing a snapshot.
+	 * Therefore, if we are here, we have not incurred in any error condition,
+	 * which means we should decide which snapshot we are working on and
+	 * increase its usage count.
+	 */
+	snap = (snap ? snap : root->snap);
+	if (snap && !(ret < 0)) {
+		usage_count = atomic_inc_return(&snap->usage_count);
+		BTRFS_SUB_DBG(TX_START, "Transaction %d mapped onto %.*s, usage = %d\n",
+				snap->owner_pid, snap->path.len,
+				snap->path.name, usage_count);
+	}
+
+out_err:
 	dput(sv_dentry);
 	return ret;
 }
@@ -761,13 +783,13 @@ int btrfs_acid_tx_commit(struct file * file)
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_fs_info * fs_info;
 	pid_t curr_pid = current->pid;
+	u64 mem_footprint = 0;
 
 	struct btrfs_acid_log_entry * entry;
 	struct list_head * head;
 
-	if (!file)
-	{
-		BTRFS_SUB_DBG(COMMIT, "file == NULL\n");
+	if (!file) {
+		BTRFS_SUB_DBG(TX_COMMIT, "file == NULL\n");
 		return -EINVAL;
 	}
 
@@ -778,9 +800,8 @@ int btrfs_acid_tx_commit(struct file * file)
 	 * Therefore, we must check if the root we have is the root of a snapshot.
 	 * If so, we are ok; otherwise, we won't support this operation.
 	 */
-	if (!root->snap)
-	{
-		BTRFS_SUB_DBG(COMMIT, "Not a snapshot.\n");
+	if (!root->snap) {
+		BTRFS_SUB_DBG(TX_COMMIT, "Not a snapshot.\n");
 		ret = -ENOTSUPP;
 		goto out;
 	}
@@ -791,46 +812,58 @@ int btrfs_acid_tx_commit(struct file * file)
 	down_read(&ctl->curr_snaps_sem);
 	snap = radix_tree_lookup(&ctl->current_snapshots, current->pid);
 	up_read(&ctl->curr_snaps_sem);
-	if (!snap)
-	{
-		BTRFS_SUB_DBG(COMMIT, "No Snapshot found for PID = %d\n", current->pid);
+	if (!snap) {
+		BTRFS_SUB_DBG(TX_COMMIT, "No Snapshot found for PID = %d\n", current->pid);
 		ret = -ENOTSUPP;
 		goto out;
 	}
 
+	if (!atomic_dec_and_test(&snap->usage_count))
+		goto out;
+
+	BTRFS_SUB_DBG(TX_COMMIT, "Committing transaction PID = %d\n",
+			get_current()->pid);
+
 	/* Print the read-set log */
 	head = &snap->read_log;
-	BTRFS_SUB_DBG(COMMIT, "--------- READ SET ----------\n");
+	BTRFS_SUB_DBG(TX_COMMIT, "--------- READ SET ----------\n");
 	list_for_each_entry(entry, head, list) {
-		BTRFS_SUB_DBG(COMMIT, "clock %d, type %d, size: %d, "
+		BTRFS_SUB_DBG(TX_COMMIT, "clock %d, type %d, size: %d, "
 				"location [%llu %d %llu]\n",
 				entry->clock, entry->type, entry->size,
 				entry->location.objectid, entry->location.type,
 				entry->location.offset);
 
+		mem_footprint += entry->size;
+
 		if (entry->type == BTRFS_ACID_LOG_READ) {
-			BTRFS_SUB_DBG(COMMIT, "\tfirst: %d, last: %d\n",
-				((struct btrfs_acid_log_entry_rw *) entry->data)->first_page,
-				((struct btrfs_acid_log_entry_rw *) entry->data)->last_page);
+			BTRFS_SUB_DBG(TX_COMMIT, "\tfirst: %d, last: %d\n",
+				((struct btrfs_acid_log_rw *) entry->data)->first_page,
+				((struct btrfs_acid_log_rw *) entry->data)->last_page);
 		}
 	}
 
 	/* Print the write-set log */
 	head = &snap->write_log;
-	BTRFS_SUB_DBG(COMMIT, "--------- WRITE SET ----------\n");
+	BTRFS_SUB_DBG(TX_COMMIT, "--------- WRITE SET ----------\n");
 	list_for_each_entry(entry, head, list) {
-		BTRFS_SUB_DBG(COMMIT, "clock %d, type %d, size: %d, "
+		BTRFS_SUB_DBG(TX_COMMIT, "clock %d, type %d, size: %d, "
 				"location [%llu %d %llu]\n",
 				entry->clock, entry->type, entry->size,
 				entry->location.objectid, entry->location.type,
 				entry->location.offset);
 
+		mem_footprint += entry->size;
+
 		if (entry->type == BTRFS_ACID_LOG_WRITE) {
-			BTRFS_SUB_DBG(COMMIT, "\tfirst: %d, last: %d\n",
-				((struct btrfs_acid_log_entry_rw *) entry->data)->first_page,
-				((struct btrfs_acid_log_entry_rw *) entry->data)->last_page);
+			BTRFS_SUB_DBG(TX_COMMIT, "\tfirst: %d, last: %d\n",
+				((struct btrfs_acid_log_rw *) entry->data)->first_page,
+				((struct btrfs_acid_log_rw *) entry->data)->last_page);
 		}
 	}
+
+	BTRFS_SUB_DBG(TX_COMMIT, "---- MEM FOOTPRINT = %llu bytes------\n",
+			mem_footprint);
 
 out:
 	dput(sv_dentry);
@@ -1362,6 +1395,9 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	 * the snapshot from the 'current_snapshots' tree.
 	 */
 
+	/* set the root's snapshot */
+	pending->snap->snap = snap;
+
 	snap_dentry = __snapshot_instantiate_dentry(pending->dentry);
 	if (!snap_dentry || IS_ERR(snap_dentry))
 	{
@@ -1371,8 +1407,9 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	}
 	__snapshot_set_perms(dir, snap_dentry);
 
-	/* set the root's snapshot */
-	pending->snap->snap = snap;
+	/* initiate usage count atomic_t field */
+	atomic_set(&snap->usage_count, 0);
+
 
 out_put_dentry:
 	if (ret) // only happens if execution comes from commit transaction.
@@ -2168,8 +2205,7 @@ btrfs_acid_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 }
 
 ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
-				    const struct iovec *iov,
-				    unsigned long nr_segs, loff_t pos)
+		const struct iovec *iov, unsigned long nr_segs, loff_t pos)
 {
 	ssize_t written;
 	loff_t first, last;
@@ -2211,38 +2247,199 @@ out:
 }
 
 int btrfs_acid_getattr(struct vfsmount * mnt,
-			 struct dentry * dentry, struct kstat * stat)
+		struct dentry * dentry, struct kstat * stat)
 {
 	int ret;
-	struct inode * inode = dentry->d_inode;
-
-	BTRFS_SUB_DBG(CALL, "");
+//	struct inode * inode = dentry->d_inode;
 
 	ret = btrfs_getattr(mnt, dentry, stat);
 	BUG_ON(ret != 0); // at the moment, it always returns 0.
 
-	ret = btrfs_acid_log_attr_get(inode);
+//	ret = btrfs_acid_log_getattr(inode);
+	ret = btrfs_acid_log_getattr(dentry);
 	if (ret < 0)
-		BTRFS_SUB_DBG(LOG, "attr_get logging returned an error\n");
+		BTRFS_SUB_DBG(LOG, "getattr logging returned an error\n");
 
 	return 0;
 }
 
+int btrfs_acid_real_readdir(struct file * filp, void * dirent,
+		filldir_t filldir)
+{
+	int ret, err;
+
+	ret = btrfs_real_readdir(filp, dirent, filldir);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_readdir(filp->f_dentry->d_inode);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "readdir logging returned an error\n");
+
+out:
+	return ret;
+}
+
+int btrfs_acid_create(struct inode * dir, struct dentry * dentry,
+		int mode, struct nameidata * nd)
+{
+	int ret, err;
+
+	ret = btrfs_create(dir, dentry, mode, nd);
+	if (ret < 0)
+		goto out;
+
+	if (!dentry->d_inode) {
+		BTRFS_SUB_DBG(TX, "Dentry Inode not defined after CREATE\n");
+		goto out;
+	}
+
+	err = btrfs_acid_log_create(dir, dentry, mode);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "create logging returned an error\n");
+out:
+	return ret;
+}
+
+int btrfs_acid_unlink(struct inode * dir, struct dentry * dentry)
+{
+	int ret, err;
+
+	ret = btrfs_unlink(dir, dentry);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_unlink(dir, dentry);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "unlink logging returned an error\n");
+
+out:
+	return ret;
+}
+
+int btrfs_acid_link(struct dentry * old_dentry, struct inode * dir,
+		struct dentry * dentry)
+{
+	int ret, err;
+
+	ret = btrfs_link(old_dentry, dir, dentry);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_link(old_dentry, dir, dentry);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "link logging returned an error\n");
+out:
+	return ret;
+}
+
+int btrfs_acid_mkdir(struct inode * dir, struct dentry * dentry, int mode)
+{
+	int ret, err;
+
+	ret = btrfs_mkdir(dir, dentry, mode);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_mkdir(dir, dentry, mode);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "mkdir logging returned an error\n");
+out:
+	return ret;
+}
+
+int btrfs_acid_rmdir(struct inode * dir, struct dentry * dentry)
+{
+	int ret, err;
+	ret = btrfs_rmdir(dir, dentry);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_rmdir(dir, dentry);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "rmdir logging returned an error\n");
+out:
+	return ret;
+}
+
+int btrfs_acid_rename(struct inode * old_dir, struct dentry * old_dentry,
+		struct inode * new_dir, struct dentry * new_dentry)
+{
+	int ret, err;
+
+	ret = btrfs_rename(old_dir, old_dentry, new_dir, new_dentry);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_rename(old_dir, old_dentry, new_dir, new_dentry);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "rename logging returned an error\n");
+out:
+	return ret;
+}
+
+int btrfs_acid_symlink(struct inode * dir, struct dentry * dentry,
+		const char * symname)
+{
+	int ret, err;
+	ret = btrfs_symlink(dir, dentry, symname);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_symlink(dir, dentry, symname);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "symlink logging returned an error\n");
+
+out:
+	return ret;
+}
+
+int btrfs_acid_setattr(struct dentry * dentry, struct iattr * attr)
+{
+	int ret, err;
+
+	ret = btrfs_setattr(dentry, attr);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_setattr(dentry, attr);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "setattr logging returned an error\n");
+
+out:
+	return ret;
+}
+
+int btrfs_acid_mknod(struct inode * dir, struct dentry * dentry,
+		int mode, dev_t rdev)
+{
+	int ret, err;
+
+	ret = btrfs_mknod(dir, dentry, mode, rdev);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_mknod(dir, dentry, mode, rdev);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "MKNOD logging returned an error\n");
+out:
+	return ret;
+}
 
 /* Wrapper structs for all file system's required operations. */
 /* from inode.c */
 const struct inode_operations btrfs_acid_dir_inode_operations = {
 	.getattr	= btrfs_acid_getattr,
 	.lookup		= btrfs_lookup,
-	.create		= btrfs_create,
-	.unlink		= btrfs_unlink,
-	.link		= btrfs_link,
-	.mkdir		= btrfs_mkdir,
-	.rmdir		= btrfs_rmdir,
-	.rename		= btrfs_rename,
-	.symlink	= btrfs_symlink,
-	.setattr	= btrfs_setattr,
-	.mknod		= btrfs_mknod,
+	.create		= btrfs_acid_create,
+	.unlink		= btrfs_acid_unlink,
+	.link		= btrfs_acid_link,
+	.mkdir		= btrfs_acid_mkdir,
+	.rmdir		= btrfs_acid_rmdir,
+	.rename		= btrfs_acid_rename,
+	.symlink	= btrfs_acid_symlink,
+	.setattr	= btrfs_acid_setattr,
+	.mknod		= btrfs_acid_mknod,
 	.setxattr	= btrfs_setxattr,
 	.getxattr	= btrfs_getxattr,
 	.listxattr	= btrfs_listxattr,
@@ -2258,7 +2455,8 @@ const struct inode_operations btrfs_acid_dir_ro_inode_operations = {
 const struct file_operations btrfs_acid_dir_file_operations = {
 	.llseek		= generic_file_llseek,
 	.read		= generic_read_dir,
-	.readdir	= btrfs_real_readdir,
+//	.readdir	= btrfs_real_readdir,
+	.readdir	= btrfs_acid_real_readdir,
 	.unlocked_ioctl	= btrfs_ioctl,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= btrfs_ioctl,
@@ -2291,7 +2489,7 @@ const struct address_space_operations btrfs_acid_symlink_aops = {
 const struct inode_operations btrfs_acid_file_inode_operations = {
 	.truncate	= btrfs_truncate,
 	.getattr	= btrfs_acid_getattr,
-	.setattr	= btrfs_setattr,
+	.setattr	= btrfs_acid_setattr,
 	.setxattr	= btrfs_setxattr,
 	.getxattr	= btrfs_getxattr,
 	.listxattr      = btrfs_listxattr,
@@ -2303,7 +2501,7 @@ const struct inode_operations btrfs_acid_file_inode_operations = {
 
 const struct inode_operations btrfs_acid_special_inode_operations = {
 	.getattr	= btrfs_acid_getattr,
-	.setattr	= btrfs_setattr,
+	.setattr	= btrfs_acid_setattr,
 	.permission	= btrfs_permission,
 	.setxattr	= btrfs_setxattr,
 	.getxattr	= btrfs_getxattr,
