@@ -22,26 +22,33 @@
 #include "ctree.h"
 #include "txbtrfs.h"
 
-#define BTRFS_ACID_LOG_READ			(1 << 0)
-#define BTRFS_ACID_LOG_WRITE		(1 << 1)
-#define BTRFS_ACID_LOG_ATTR_GET		(1 << 2)
-#define BTRFS_ACID_LOG_ATTR_SET		(1 << 3)
-#define BTRFS_ACID_LOG_READDIR		(1 << 4)
-#define BTRFS_ACID_LOG_CREATE		(1 << 5)
-#define BTRFS_ACID_LOG_UNLINK		(1 << 6)
-#define BTRFS_ACID_LOG_LINK			(1 << 7)
-#define BTRFS_ACID_LOG_MKDIR		(1 << 8)
-#define BTRFS_ACID_LOG_RMDIR		(1 << 9)
-#define BTRFS_ACID_LOG_RENAME		(1 << 10)
-#define BTRFS_ACID_LOG_SYMLINK		(1 << 11)
-#define BTRFS_ACID_LOG_SYMLINK		(1 << 12)
-#define BTRFS_ACID_LOG_MKNOD		(1 << 13)
+#define BTRFS_ACID_LOG_READ				(1 << 0)
+#define BTRFS_ACID_LOG_WRITE			(1 << 1)
+#define BTRFS_ACID_LOG_ATTR_GET			(1 << 2)
+#define BTRFS_ACID_LOG_ATTR_SET			(1 << 3)
+#define BTRFS_ACID_LOG_READDIR			(1 << 4)
+#define BTRFS_ACID_LOG_CREATE			(1 << 5)
+#define BTRFS_ACID_LOG_UNLINK			(1 << 6)
+#define BTRFS_ACID_LOG_LINK				(1 << 7)
+#define BTRFS_ACID_LOG_MKDIR			(1 << 8)
+#define BTRFS_ACID_LOG_RMDIR			(1 << 9)
+#define BTRFS_ACID_LOG_RENAME			(1 << 10)
+#define BTRFS_ACID_LOG_SYMLINK			(1 << 11)
+#define BTRFS_ACID_LOG_MKNOD			(1 << 12)
+#define BTRFS_ACID_LOG_XATTR_SET		(1 << 13)
+#define BTRFS_ACID_LOG_XATTR_GET		(1 << 14)
+#define BTRFS_ACID_LOG_XATTR_LIST		(1 << 15)
+#define BTRFS_ACID_LOG_XATTR_REMOVE		(1 << 16)
+#define BTRFS_ACID_LOG_TRUNCATE			(1 << 17)
+#define BTRFS_ACID_LOG_PERMISSION		(1 << 18)
+#define BTRFS_ACID_LOG_MMAP				(1 << 19)
+
 
 struct btrfs_acid_log_entry
 {
 	struct btrfs_key location;
 	u64 clock;
-	u16 type;
+	u32 type;
 	size_t size;
 	void * data;
 
@@ -136,6 +143,40 @@ struct btrfs_acid_log_mknod
 	dev_t rdev;
 };
 
+struct btrfs_acid_log_xattr
+{
+	struct qstr name;
+	struct btrfs_key location;
+	struct qstr attr_name;
+	void * value;
+	size_t size;
+	int flags;
+};
+
+struct btrfs_acid_log_truncate
+{
+	struct btrfs_key location;
+	loff_t size;
+};
+
+struct btrfs_acid_log_permission
+{
+	struct btrfs_key location;
+	int mask;
+};
+
+struct btrfs_acid_log_mmap
+{
+	struct btrfs_key location;
+	struct qstr name;
+
+	pgprot_t prot;
+	unsigned long flags;
+
+	pgoff_t first_page;
+	pgoff_t last_page;
+};
+
 int btrfs_acid_log_read(struct btrfs_acid_snapshot * snap,
 		struct btrfs_key * location, pgoff_t first, pgoff_t last);
 int btrfs_acid_log_write(struct btrfs_acid_snapshot * snap,
@@ -156,6 +197,17 @@ int btrfs_acid_log_symlink(struct inode * dir, struct dentry * dentry,
 int btrfs_acid_log_setattr(struct dentry * dentry, struct iattr * attr);
 int btrfs_acid_log_mknod(struct inode * dir, struct dentry * dentry,
 		int mode, dev_t rdev);
+int btrfs_acid_log_setxattr(struct dentry * dentry, const char * name,
+		const void * value, size_t size, int flags);
+int btrfs_acid_log_getxattr(struct dentry * dentry, const char * name);
+int btrfs_acid_log_listxattr(struct dentry * dentry,
+		char * buffer, size_t user_size, ssize_t real_size);
+int btrfs_acid_log_removexattr(struct dentry * dentry, const char * name);
+int btrfs_acid_log_truncate(struct inode * inode);
+int btrfs_acid_log_permission(struct inode * inode, int mask);
+int btrfs_acid_log_mmap(struct file * filp, struct vm_area_struct * vma);
+int btrfs_acid_log_page_mkwrite(struct vm_area_struct * vma,
+		struct vm_fault * vmf);
 
 static inline void __clone_keys(struct btrfs_key * dst, struct btrfs_key * src)
 {

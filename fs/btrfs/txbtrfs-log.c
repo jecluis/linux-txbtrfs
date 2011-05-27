@@ -17,6 +17,7 @@
  */
 #include <linux/slab.h>
 #include <linux/list.h>
+#include <linux/pagemap.h>
 #include "ctree.h"
 #include "btrfs_inode.h"
 #include "txbtrfs.h"
@@ -24,6 +25,16 @@
 
 /* Static methods */
 /* creation methods */
+static struct btrfs_acid_log_mmap *
+__log_create_mmap(struct btrfs_key * location, struct qstr * name,
+		pgoff_t start, pgoff_t end, pgprot_t prot, unsigned long flags);
+static struct btrfs_acid_log_permission *
+__log_create_permission(struct btrfs_key * location, int mask);
+static struct btrfs_acid_log_truncate *
+__log_create_truncate(struct btrfs_key * location, loff_t size);
+static struct btrfs_acid_log_xattr *
+__log_create_xattr(struct btrfs_key * location, struct qstr * name,
+		const char * attr_name, const void * value, size_t size, int flags);
 static struct btrfs_acid_log_mknod *
 __log_create_mknod(struct btrfs_key * parent_location, struct qstr * name,
 		struct btrfs_key * location, int mode, dev_t rdev);
@@ -53,7 +64,7 @@ static struct btrfs_acid_log_rw *
 __log_create_rw(pgoff_t first, pgoff_t last);
 static struct btrfs_acid_log_entry *
 __log_create_entry(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location, size_t size, void * data, u16 type);
+		struct btrfs_key * location, size_t size, void * data, u32 type);
 
 /* destruction methods */
 static void
@@ -68,6 +79,8 @@ static void __log_destroy_rename(struct btrfs_acid_log_rename * entry);
 static void __log_destroy_symlink(struct btrfs_acid_log_symlink * entry);
 static void __log_destroy_attr_rw(struct btrfs_acid_log_attr_rw * entry);
 static void __log_destroy_mknod(struct btrfs_acid_log_mknod * entry);
+static void __log_destroy_xattr(struct btrfs_acid_log_xattr * entry);
+static void __log_destroy_mmap(struct btrfs_acid_log_mmap * entry);
 
 /*
  * Adds a 'read' entry to the read-set.
@@ -492,6 +505,390 @@ int btrfs_acid_log_mknod(struct inode * dir, struct dentry * dentry,
 	return 0;
 }
 
+int btrfs_acid_log_setxattr(struct dentry * dentry, const char * name,
+		const void * value, size_t size, int flags)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_xattr * log_xattr;
+	struct btrfs_inode * inode;
+
+	if (!dentry || !dentry->d_inode || !name || !value)
+		return -EINVAL;
+
+	inode = BTRFS_I(dentry->d_inode);
+
+	log_xattr = __log_create_xattr(&inode->location, &dentry->d_name,
+			name, value, size, flags);
+	if (IS_ERR(log_xattr))
+		return PTR_ERR(log_xattr);
+
+	log_entry = __log_create_entry(inode->root->snap, &inode->location,
+			sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_SET);
+	if (IS_ERR(log_entry)) {
+		__log_destroy_xattr(log_xattr);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "SET-X-ATTR: Adding to write-log\n");
+	list_add(&log_entry->list, &inode->root->snap->write_log);
+	return 0;
+}
+
+int btrfs_acid_log_getxattr(struct dentry * dentry, const char * name)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_xattr * log_xattr;
+	struct btrfs_inode * inode;
+
+	if (!dentry || !dentry->d_inode || !name)
+		return -EINVAL;
+
+	inode = BTRFS_I(dentry->d_inode);
+
+	log_xattr = __log_create_xattr(&inode->location, &dentry->d_name,
+			name, NULL, 0, 0);
+	if (IS_ERR(log_xattr))
+		return PTR_ERR(log_xattr);
+
+	log_entry = __log_create_entry(inode->root->snap, &inode->location,
+			sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_GET);
+	if (IS_ERR(log_entry)) {
+		__log_destroy_xattr(log_xattr);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "GET-X-ATTR: Adding to read-log\n");
+	list_add(&log_entry->list, &inode->root->snap->read_log);
+	return 0;
+}
+
+int btrfs_acid_log_listxattr(struct dentry * dentry,
+		char * buffer, size_t user_size, ssize_t real_size)
+{
+	struct btrfs_inode * inode;
+	struct btrfs_acid_log_xattr * log_xattr;
+	struct btrfs_acid_log_entry * log_entry;
+	char * ptr, * attr_name;
+	size_t missing;
+
+	if (!dentry || !dentry->d_inode)
+		return -EINVAL;
+
+	inode = BTRFS_I(dentry->d_inode);
+	missing = (user_size <= real_size ? user_size : real_size);
+	ptr = buffer;
+	while (1) {
+		attr_name = ptr;
+		for (; ptr && *(ptr++); );
+		missing -= (ptr - attr_name);
+
+		log_xattr = __log_create_xattr(&inode->location, &dentry->d_name,
+				attr_name, NULL, 0, 0);
+		if (IS_ERR(log_xattr))
+			return PTR_ERR(log_xattr);
+
+		log_entry = __log_create_entry(inode->root->snap, &inode->location,
+				sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_LIST);
+		if (IS_ERR(log_entry)) {
+			__log_destroy_xattr(log_xattr);
+			return PTR_ERR(log_entry);
+		}
+
+		BTRFS_SUB_DBG(LOG, "LIST-X-ATTR: Adding to read-log\n");
+		list_add(&log_entry->list, &inode->root->snap->read_log);
+
+		if (missing <= 0)
+			break;
+	}
+
+	return 0;
+}
+
+int btrfs_acid_log_removexattr(struct dentry * dentry, const char * name)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_xattr * log_xattr;
+	struct btrfs_inode * inode;
+
+	if (!dentry || !dentry->d_inode || !name)
+		return -EINVAL;
+
+	inode = BTRFS_I(dentry->d_inode);
+	log_xattr = __log_create_xattr(&inode->location, &dentry->d_name, name,
+			NULL, 0, 0);
+	if (IS_ERR(log_xattr))
+		return PTR_ERR(log_xattr);
+	log_entry = __log_create_entry(inode->root->snap, &inode->location,
+			sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_REMOVE);
+	if (IS_ERR(log_entry)) {
+		__log_destroy_xattr(log_xattr);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "REMOVE-X-ATTR: Adding to write-log\n");
+	list_add(&log_entry->list, &inode->root->snap->write_log);
+	return 0;
+}
+
+int btrfs_acid_log_truncate(struct inode * inode)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_truncate * log_truncate;
+
+	if (!inode)
+		return -EINVAL;
+
+	log_truncate =
+			__log_create_truncate(&BTRFS_I(inode)->location, inode->i_size);
+	if (IS_ERR(log_truncate))
+		return PTR_ERR(log_truncate);
+	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
+			&BTRFS_I(inode)->location, sizeof(*log_truncate), log_truncate,
+			BTRFS_ACID_LOG_TRUNCATE);
+	if (IS_ERR(log_entry)) {
+		kfree(log_truncate);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "TRUNCATE: Adding to write-log\n");
+	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->write_log);
+	return 0;
+}
+
+int btrfs_acid_log_permission(struct inode * inode, int mask)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_permission * log_permission;
+
+	if (!inode)
+		return -EINVAL;
+
+	log_permission = __log_create_permission(&BTRFS_I(inode)->location, mask);
+	if (IS_ERR(log_permission))
+		return PTR_ERR(log_permission);
+
+	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
+			&BTRFS_I(inode)->location, sizeof(*log_permission), log_permission,
+			BTRFS_ACID_LOG_PERMISSION);
+	if (IS_ERR(log_entry)) {
+		kfree(log_permission);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "PERMISSION: Adding to read-log\n");
+	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->read_log);
+	return 0;
+}
+
+int btrfs_acid_log_mmap(struct file * filp, struct vm_area_struct * vma)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_mmap * log_mmap;
+	struct inode * inode;
+	pgoff_t start, end;
+
+	if (!filp || !vma)
+		return -EINVAL;
+
+	inode = fdentry(filp)->d_inode;
+
+	start = vma->vm_pgoff;
+	end = start + ((vma->vm_end - vma->vm_start - 1) >> PAGE_CACHE_SHIFT);
+
+	log_mmap = __log_create_mmap(&BTRFS_I(inode)->location,
+			&fdentry(filp)->d_name, start, end, vma->vm_page_prot,
+			vma->vm_flags);
+	if (IS_ERR(log_mmap))
+		return PTR_ERR(log_mmap);
+
+	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
+			&BTRFS_I(inode)->location, sizeof(*log_mmap), log_mmap,
+			BTRFS_ACID_LOG_MMAP);
+	if (IS_ERR(log_entry)) {
+		__log_destroy_mmap(log_mmap);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "MMAP: Adding to read-log\n");
+	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->read_log);
+
+	return 0;
+}
+
+/**
+ * btrfs_acid_log_page_mkwrite - Logs a write to a page (from mmap et al.)
+ *
+ * Uses the same struct and is logged with the same type as a common write. If
+ * this causes any unforeseen problems, it will be changed.
+ */
+int btrfs_acid_log_page_mkwrite(struct vm_area_struct * vma,
+		struct vm_fault * vmf)
+{
+	struct btrfs_acid_log_entry * log_entry;
+	struct btrfs_acid_log_rw * rw_entry;
+	struct inode * inode;
+
+	if (!vma || !vmf)
+		return -EINVAL;
+
+	inode = fdentry(vma->vm_file)->d_inode;
+
+	rw_entry = __log_create_rw(vmf->pgoff, vmf->pgoff);
+	if (IS_ERR(rw_entry))
+		return PTR_ERR(rw_entry);
+	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
+			&BTRFS_I(inode)->location, sizeof(*rw_entry), rw_entry,
+			BTRFS_ACID_LOG_WRITE);
+	if (IS_ERR(log_entry)) {
+		kfree(rw_entry);
+		return PTR_ERR(log_entry);
+	}
+	BTRFS_SUB_DBG(LOG, "PAGE-MKWRITE: Adding to write-log\n");
+	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->write_log);
+
+	return 0;
+}
+
+static struct btrfs_acid_log_mmap *
+__log_create_mmap(struct btrfs_key * location, struct qstr * name,
+		pgoff_t start, pgoff_t end, pgprot_t prot, unsigned long flags)
+{
+	struct btrfs_acid_log_mmap * entry;
+	int err;
+
+	if (!location || !name)
+		return ERR_PTR(-EINVAL);
+
+	entry = kzalloc(sizeof(*entry), GFP_NOFS);
+	if (!entry)
+		return ERR_PTR(-EINVAL);
+
+	__clone_keys(&entry->location, location);
+	err = __clone_names(&entry->name, name);
+	if (err < 0) {
+		kfree(entry);
+		return ERR_PTR(err);
+	}
+
+	entry->first_page = start;
+	entry->last_page = end;
+	entry->prot = prot;
+	entry->flags = flags;
+
+	return entry;
+}
+
+static void __log_destroy_mmap(struct btrfs_acid_log_mmap * entry)
+{
+	if (entry) {
+		__free_name(&entry->name);
+		kfree(entry);
+	}
+}
+
+static struct btrfs_acid_log_permission *
+__log_create_permission(struct btrfs_key * location, int mask)
+{
+	struct btrfs_acid_log_permission * entry;
+
+	if (!location)
+		return ERR_PTR(-EINVAL);
+
+	entry = kzalloc(sizeof(*entry), GFP_NOFS);
+	if (!entry)
+		return ERR_PTR(-ENOMEM);
+	__clone_keys(&entry->location, location);
+	entry->mask = mask;
+
+	return entry;
+}
+
+
+static struct btrfs_acid_log_truncate *
+__log_create_truncate(struct btrfs_key * location, loff_t size)
+{
+	struct btrfs_acid_log_truncate * entry;
+
+	if (!location)
+		return ERR_PTR(-EINVAL);
+
+	entry = kzalloc(sizeof(*entry), GFP_NOFS);
+	if (!entry)
+		return ERR_PTR(-ENOMEM);
+
+	__clone_keys(&entry->location, location);
+	entry->size = size;
+
+	return entry;
+}
+
+/* 'attr_name' may be NULL if, and only if, we are logging a 'listxattr' that
+ * does not return attributes (i.e., that returns only the number of extended
+ * attributes). In that case, 'value' must also be NULL.
+ */
+static struct btrfs_acid_log_xattr *
+__log_create_xattr(struct btrfs_key * location, struct qstr * name,
+		const char * attr_name, const void * value, size_t size, int flags)
+{
+	int err;
+	struct btrfs_acid_log_xattr * entry;
+	struct qstr * qstr;
+
+	if (!location || !name)
+		return ERR_PTR(-EINVAL);
+
+	if (!attr_name && value)
+		return ERR_PTR(-EINVAL);
+
+	entry = kzalloc(sizeof(*entry), GFP_NOFS);
+	if (!entry)
+		return ERR_PTR(-ENOMEM);
+
+	__clone_keys(&entry->location, location);
+	err = __clone_names(&entry->name, name);
+	if (err < 0)
+		goto err_free;
+
+	if (!attr_name)
+		goto out;
+
+	qstr = &entry->attr_name;
+	qstr->len = strlen(attr_name);
+	qstr->name = kzalloc(sizeof(*qstr->name) * qstr->len, GFP_NOFS);
+	if (!qstr->name)
+		goto err_free_name;
+	memcpy((void *) qstr->name, (void *) attr_name, qstr->len);
+
+	/* we have zeroed 'entry' with kzalloc; we don't need to set 'value'
+	 * and 'size' to zero if they are not set. */
+	if (!value)
+		goto out;
+
+	entry->size = size;
+	entry->value = kzalloc(sizeof(*entry->value) * size, GFP_NOFS);
+	if (!entry->value)
+		goto err_free_attr_name;
+	memcpy(entry->value, value, size);
+
+out:
+	entry->flags = flags;
+
+	return entry;
+
+err_free_attr_name:
+	__free_name(&entry->attr_name);
+err_free_name:
+	__free_name(&entry->name);
+err_free:
+	kfree(entry);
+	return ERR_PTR(err);
+}
+
+static void __log_destroy_xattr(struct btrfs_acid_log_xattr * entry)
+{
+	if (entry) {
+		__free_name(&entry->name);
+		__free_name(&entry->attr_name);
+		if (entry->value)
+			kfree(entry->value);
+		kfree(entry);
+	}
+}
+
 static struct btrfs_acid_log_mknod *
 __log_create_mknod(struct btrfs_key * parent_location, struct qstr * name,
 		struct btrfs_key * location, int mode, dev_t rdev)
@@ -860,7 +1257,7 @@ __log_create_rw(pgoff_t first, pgoff_t last)
 
 static struct btrfs_acid_log_entry *
 __log_create_entry(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location, size_t size, void * data, u16 type)
+		struct btrfs_key * location, size_t size, void * data, u32 type)
 {
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_acid_log_entry * entry;

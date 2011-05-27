@@ -1258,8 +1258,6 @@ int btrfs_file_mmap(struct file	*filp, struct vm_area_struct *vma)
 {
 	struct address_space *mapping = filp->f_mapping;
 
-	BTRFS_SUB_DBG(CALL, "");
-
 	if (!mapping->a_ops->readpage)
 		return -ENOEXEC;
 

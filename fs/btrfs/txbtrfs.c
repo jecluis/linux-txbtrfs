@@ -2426,6 +2426,167 @@ out:
 	return ret;
 }
 
+int btrfs_acid_setxattr(struct dentry * dentry, const char * name,
+		const void * value, size_t size, int flags)
+{
+	int ret, err;
+
+	ret = btrfs_setxattr(dentry, name, value, size, flags);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_setxattr(dentry, name, value, size, flags);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "SET-X-ATTR logging returned an error\n");
+out:
+	return ret;
+}
+
+ssize_t btrfs_acid_getxattr(struct dentry * dentry, const char * name,
+		void * buffer, size_t size)
+{
+	int err;
+	ssize_t ret;
+
+	ret = btrfs_getxattr(dentry, name, buffer, size);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_getxattr(dentry, name);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "GET-X-ATTR logging returned an error\n");
+out:
+	return ret;
+}
+
+ssize_t btrfs_acid_listxattr(struct dentry * dentry,
+		char * buffer, size_t size)
+{
+	ssize_t ret;
+	int err;
+
+	ret = btrfs_listxattr(dentry, buffer, size);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_listxattr(dentry, buffer, size, ret);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "LIST-X-ATTR logging returned an error\n");
+out:
+	return ret;
+}
+
+int btrfs_acid_removexattr(struct dentry * dentry, const char * name)
+{
+	int ret, err;
+
+	ret = btrfs_removexattr(dentry, name);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_removexattr(dentry, name);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "REMOVE-X-ATTR logging returned an error\n");
+
+out:
+	return ret;
+}
+
+void btrfs_acid_truncate(struct inode * inode)
+{
+	int err;
+
+	btrfs_truncate(inode);
+	err = btrfs_acid_log_truncate(inode);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "TRUNCATE logging returned an error\n");
+
+}
+
+int btrfs_acid_permission(struct inode * inode, int mask)
+{
+	int ret, err;
+
+	ret = btrfs_permission(inode, mask);
+	if (ret < 0)
+		goto out;
+
+	err = btrfs_acid_log_permission(inode, mask);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "PERMISSION logging returned an error\n");
+out:
+	return ret;
+}
+
+/**
+ * btrfs_acid_file_mmap - Wraps a mmap access for transactional accesses.
+ *
+ * Once we get here, from the VFS, we consider the mmap access to be purely
+ * read-only. Write accesses will be logged using 'btrfs_acid_page_mkwrite'.
+ * We'll also redefine 'vma->vm_ops' for our own vm_operations_struct, instead
+ * of Btrfs'.
+ */
+int btrfs_acid_file_mmap(struct file * filp, struct vm_area_struct * vma)
+{
+	int ret, err;
+	unsigned long start, end;
+
+	ret = btrfs_file_mmap(filp, vma);
+	if (ret < 0)
+		goto out;
+
+	start = vma->vm_pgoff;
+//	end = (vma->vm_end - vma->vm_start) >> PAGE_CACHE_SHIFT;
+	end = start + ((vma->vm_end - vma->vm_start - 1) >> PAGE_CACHE_SHIFT);
+	BTRFS_SUB_DBG(LOG,
+			"MMAP: file = %.*s, start = %lu, end = %lu, "
+			"vm_pgoff = %lu, vm_start = %lu, vm_end = %lu\n",
+			filp->f_path.dentry->d_name.len,
+			filp->f_path.dentry->d_name.name,
+			start, end,
+			vma->vm_pgoff, vma->vm_start, vma->vm_end);
+
+	err = btrfs_acid_log_mmap(filp, vma);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "MMAP logging returned an error\n");
+
+	vma->vm_ops = &btrfs_acid_file_vm_ops;
+out:
+	return ret;
+}
+
+int btrfs_acid_page_mkwrite(struct vm_area_struct * vma, struct vm_fault * vmf)
+{
+	int ret, err;
+
+	ret = btrfs_page_mkwrite(vma, vmf);
+	if (unlikely(!(ret & VM_FAULT_LOCKED)))
+		goto out;
+
+	err = btrfs_acid_log_page_mkwrite(vma, vmf);
+	if (err < 0)
+		BTRFS_SUB_DBG(LOG, "PAGE-MKWRITE logging returned an error\n");
+
+//	BTRFS_SUB_DBG(LOG, "PAGE-MKWRITE: pgoff = %llu, ret = %d\n",
+//			vmf->pgoff, ret);
+out:
+	return ret;
+}
+
+long btrfs_acid_fallocate(struct inode * inode, int mode,
+		loff_t offset, loff_t len)
+{
+	long ret;
+//	int err;
+
+	ret = btrfs_fallocate(inode, mode, offset, len);
+	if (ret < 0)
+		goto out;
+
+//	err = btrfs_acid_log_write()
+	return ret;
+}
+
 /* Wrapper structs for all file system's required operations. */
 /* from inode.c */
 const struct inode_operations btrfs_acid_dir_inode_operations = {
@@ -2440,16 +2601,16 @@ const struct inode_operations btrfs_acid_dir_inode_operations = {
 	.symlink	= btrfs_acid_symlink,
 	.setattr	= btrfs_acid_setattr,
 	.mknod		= btrfs_acid_mknod,
-	.setxattr	= btrfs_setxattr,
-	.getxattr	= btrfs_getxattr,
-	.listxattr	= btrfs_listxattr,
-	.removexattr	= btrfs_removexattr,
-	.permission	= btrfs_permission,
+	.setxattr	= btrfs_acid_setxattr,
+	.getxattr	= btrfs_acid_getxattr,
+	.listxattr	= btrfs_acid_listxattr,
+	.removexattr	= btrfs_acid_removexattr,
+	.permission	= btrfs_acid_permission,
 };
 
 const struct inode_operations btrfs_acid_dir_ro_inode_operations = {
 	.lookup		= btrfs_lookup,
-	.permission	= btrfs_permission,
+	.permission	= btrfs_acid_permission,
 };
 
 const struct file_operations btrfs_acid_dir_file_operations = {
@@ -2487,26 +2648,26 @@ const struct address_space_operations btrfs_acid_symlink_aops = {
 };*/
 
 const struct inode_operations btrfs_acid_file_inode_operations = {
-	.truncate	= btrfs_truncate,
+	.truncate	= btrfs_acid_truncate,
 	.getattr	= btrfs_acid_getattr,
 	.setattr	= btrfs_acid_setattr,
-	.setxattr	= btrfs_setxattr,
-	.getxattr	= btrfs_getxattr,
-	.listxattr      = btrfs_listxattr,
-	.removexattr	= btrfs_removexattr,
-	.permission	= btrfs_permission,
-	.fallocate	= btrfs_fallocate,
+	.setxattr	= btrfs_acid_setxattr,
+	.getxattr	= btrfs_acid_getxattr,
+	.listxattr      = btrfs_acid_listxattr,
+	.removexattr	= btrfs_acid_removexattr,
+	.permission	= btrfs_acid_permission,
+	.fallocate	= btrfs_acid_fallocate,
 	.fiemap		= btrfs_fiemap,
 };
 
 const struct inode_operations btrfs_acid_special_inode_operations = {
 	.getattr	= btrfs_acid_getattr,
 	.setattr	= btrfs_acid_setattr,
-	.permission	= btrfs_permission,
-	.setxattr	= btrfs_setxattr,
-	.getxattr	= btrfs_getxattr,
-	.listxattr	= btrfs_listxattr,
-	.removexattr	= btrfs_removexattr,
+	.permission	= btrfs_acid_permission,
+	.setxattr	= btrfs_acid_setxattr,
+	.getxattr	= btrfs_acid_getxattr,
+	.listxattr	= btrfs_acid_listxattr,
+	.removexattr	= btrfs_acid_removexattr,
 };
 
 const struct inode_operations btrfs_acid_symlink_inode_operations = {
@@ -2514,11 +2675,11 @@ const struct inode_operations btrfs_acid_symlink_inode_operations = {
 	.follow_link	= page_follow_link_light,
 	.put_link	= page_put_link,
 	.getattr	= btrfs_acid_getattr,
-	.permission	= btrfs_permission,
-	.setxattr	= btrfs_setxattr,
-	.getxattr	= btrfs_getxattr,
-	.listxattr	= btrfs_listxattr,
-	.removexattr	= btrfs_removexattr,
+	.permission	= btrfs_acid_permission,
+	.setxattr	= btrfs_acid_setxattr,
+	.getxattr	= btrfs_acid_getxattr,
+	.listxattr	= btrfs_acid_listxattr,
+	.removexattr	= btrfs_acid_removexattr,
 };
 
 const struct dentry_operations btrfs_acid_dentry_operations = {
@@ -2535,7 +2696,7 @@ const struct file_operations btrfs_acid_file_operations = {
 	.aio_read	= btrfs_acid_file_aio_read,
 	.aio_write	= btrfs_acid_file_aio_write,
 	.splice_read	= generic_file_splice_read,
-	.mmap		= btrfs_file_mmap,
+	.mmap		= btrfs_acid_file_mmap,
 	.open		= btrfs_acid_file_open,
 	.release	= btrfs_release_file,
 	.fsync		= btrfs_sync_file,
@@ -2547,7 +2708,7 @@ const struct file_operations btrfs_acid_file_operations = {
 
 const struct vm_operations_struct btrfs_acid_file_vm_ops = {
 	.fault		= filemap_fault,
-	.page_mkwrite	= btrfs_page_mkwrite,
+	.page_mkwrite	= btrfs_acid_page_mkwrite,
 	.open = btrfs_acid_vm_open,
 };
 
