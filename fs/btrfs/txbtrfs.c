@@ -56,8 +56,8 @@ static int __snapshot_destroy(struct btrfs_acid_snapshot * snap);
 static int __snapshot_set_perms(struct inode * dir, struct dentry * dentry);
 static struct dentry *
 __snapshot_instantiate_dentry(struct dentry * dentry);
-static struct btrfs_acid_snapshot *
-__snapshot_add(struct btrfs_root * root, struct qstr * path);
+static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
+		struct qstr * path, struct inode * parent);
 static int __snapshot_remove_pid(struct btrfs_acid_ctl * ctl, pid_t pid);
 static int __snapshot_remove(struct btrfs_acid_ctl * ctl);
 static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
@@ -71,7 +71,7 @@ static int btrfs_has_acid_ancestor(struct btrfs_acid_ctl * ctl,
 
 
 /* Copy the contents of 'src' and return them in newly allocated memory.
- */
+ *
 struct btrfs_key * btrfs_acid_copy_key(struct btrfs_key * src)
 {
 	struct btrfs_key * key;
@@ -84,6 +84,22 @@ struct btrfs_key * btrfs_acid_copy_key(struct btrfs_key * src)
 	memcpy(key, src, sizeof(*key));
 
 	return key;
+}
+*/
+
+/**
+ * btrfs_acid_copy_key - Copy the contents of key 'src' to key 'dst'.
+ */
+int btrfs_acid_copy_key(struct btrfs_key * dst, struct btrfs_key * src)
+{
+	if (!dst || !src)
+		return -EINVAL;
+
+	dst->objectid = src->objectid;
+	dst->type = src->type;
+	dst->offset = src->offset;
+
+	return 0;
 }
 
 static inline void print_key(struct btrfs_key * key)
@@ -254,13 +270,14 @@ static struct btrfs_acid_snapshot * fill_acid_txsv(struct btrfs_root * sv,
 
 	snap->root = sv;
 	snap->gen = sv->root_item.generation;
-	snap->location = key;
+//	snap->location = key;
+	btrfs_acid_copy_key(&snap->location, key);
 	snap->parent_ino = parent_ino;
 	snap->path.len = name_len;
 	snap->path.hash = full_name_hash(name, name_len);
 	snap->hash = btrfs_name_hash(name, name_len);
 
-	memcpy(snap->path.name, name, name_len);
+	memcpy((void *) snap->path.name, (void *) name, name_len);
 
 	return snap;
 }
@@ -385,9 +402,9 @@ loop_again:
 
 		BTRFS_SUB_DBG(TX, "Last key found is a Transactional Subvolume.\n");
 		BTRFS_SUB_DBG(TX, "TXSV: root %p key [%llu %d %llu] gen %llu\n",
-				txsv->root, txsv->location->objectid, txsv->location->type,
-				txsv->location->offset, (unsigned long long) txsv->gen);
-		BTRFS_SUB_DBG(TX, "TXSV: parent ino: %lu name: %.*s\n",
+				txsv->root, txsv->location.objectid, txsv->location.type,
+				txsv->location.offset, (unsigned long long) txsv->gen);
+		BTRFS_SUB_DBG(TX, "TXSV: parent ino: %llu name: %.*s\n",
 				txsv->parent_ino, txsv->path.len, txsv->path.name);
 
 	}
@@ -452,7 +469,6 @@ int btrfs_acid_allow(struct inode * inode)
 	struct btrfs_acid_snapshot * snap;
 	struct btrfs_inode * our;
 	struct task_struct * curr_task = get_current();
-	int ancestor_pid;
 
 	if (!inode)
 		return -EINVAL;
@@ -528,7 +544,6 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	struct task_struct * task;
 	struct btrfs_acid_snapshot * snap;
 	struct btrfs_acid_snapshot_pid * pid_entry;
-	int mapping = 0;
 	pid_t found_pid = 0;
 
 	if (!ctl)
@@ -774,6 +789,68 @@ out_err:
 	return ret;
 }
 
+/**
+ * __commit_print_sets - print a snapshot's read- and write-sets.
+ *
+ * Iterates over each set and prints their contents.
+ */
+static void __commit_print_sets(struct btrfs_acid_snapshot * snap)
+{
+	u64 mem_footprint = 0;
+	struct btrfs_acid_log_entry * entry;
+	struct list_head * head;
+
+	if (!snap) {
+		BTRFS_SUB_DBG(TX_COMMIT, "SNAP == NULL !!");
+		return;
+	}
+
+	/* Print the read-set log */
+	head = &snap->read_log;
+	BTRFS_SUB_DBG(TX_COMMIT, "--------- READ SET ----------\n");
+	list_for_each_entry(entry, head, list) {
+		BTRFS_SUB_DBG(TX_COMMIT, "clock %llu, type %d, size: %lu, "
+				"location [%llu %d %llu]\n",
+				entry->clock, entry->type, entry->size,
+				entry->location.objectid, entry->location.type,
+				entry->location.offset);
+
+		mem_footprint += entry->size;
+
+		if (entry->type == BTRFS_ACID_LOG_READ) {
+			BTRFS_SUB_DBG(TX_COMMIT, "\tfirst: %lu, last: %lu\n",
+				((struct btrfs_acid_log_rw *) entry->data)->first_page,
+				((struct btrfs_acid_log_rw *) entry->data)->last_page);
+		}
+	}
+
+	/* Print the write-set log */
+	head = &snap->write_log;
+	BTRFS_SUB_DBG(TX_COMMIT, "--------- WRITE SET ----------\n");
+	list_for_each_entry(entry, head, list) {
+		BTRFS_SUB_DBG(TX_COMMIT, "clock %llu, type %d, size: %lu, "
+				"location [%llu %d %llu]\n",
+				entry->clock, entry->type, entry->size,
+				entry->location.objectid, entry->location.type,
+				entry->location.offset);
+
+		mem_footprint += entry->size;
+
+		if (entry->type == BTRFS_ACID_LOG_WRITE) {
+			BTRFS_SUB_DBG(TX_COMMIT, "\tfirst: %lu, last: %lu\n",
+				((struct btrfs_acid_log_rw *) entry->data)->first_page,
+				((struct btrfs_acid_log_rw *) entry->data)->last_page);
+		}
+	}
+
+	BTRFS_SUB_DBG(TX_COMMIT, "---- MEM FOOTPRINT = %llu bytes------\n",
+			mem_footprint);
+}
+
+/**
+ * btrfs_acid_tx_commit - Commits a transaction to the master branch.
+ *
+ */
 int btrfs_acid_tx_commit(struct file * file)
 {
 	int ret = 0;
@@ -782,11 +859,10 @@ int btrfs_acid_tx_commit(struct file * file)
 	struct btrfs_acid_snapshot * snap = NULL;
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_fs_info * fs_info;
-	pid_t curr_pid = current->pid;
-	u64 mem_footprint = 0;
+//	pid_t curr_pid = current->pid;
 
-	struct btrfs_acid_log_entry * entry;
-	struct list_head * head;
+	struct dentry * parent_dentry;
+	struct inode * parent_inode;
 
 	if (!file) {
 		BTRFS_SUB_DBG(TX_COMMIT, "file == NULL\n");
@@ -796,6 +872,9 @@ int btrfs_acid_tx_commit(struct file * file)
 	sv_dentry = dget(fdentry(file));
 	root = BTRFS_I(sv_dentry->d_inode)->root;
 
+	parent_dentry = dget(sv_dentry->d_parent);
+	parent_inode = parent_dentry->d_inode;
+
 	/* If we are to commit, we must be working inside our own snapshot.
 	 * Therefore, we must check if the root we have is the root of a snapshot.
 	 * If so, we are ok; otherwise, we won't support this operation.
@@ -803,6 +882,12 @@ int btrfs_acid_tx_commit(struct file * file)
 	if (!root->snap) {
 		BTRFS_SUB_DBG(TX_COMMIT, "Not a snapshot.\n");
 		ret = -ENOTSUPP;
+		goto out;
+	}
+
+	if (parent_inode->i_ino != root->snap->parent_ino) {
+		BTRFS_SUB_DBG(TX_COMMIT, "Invalid commit path.\n");
+		ret = -EINVAL;
 		goto out;
 	}
 
@@ -824,61 +909,181 @@ int btrfs_acid_tx_commit(struct file * file)
 	BTRFS_SUB_DBG(TX_COMMIT, "Committing transaction PID = %d\n",
 			get_current()->pid);
 
-	/* Print the read-set log */
-	head = &snap->read_log;
-	BTRFS_SUB_DBG(TX_COMMIT, "--------- READ SET ----------\n");
-	list_for_each_entry(entry, head, list) {
-		BTRFS_SUB_DBG(TX_COMMIT, "clock %d, type %d, size: %d, "
-				"location [%llu %d %llu]\n",
-				entry->clock, entry->type, entry->size,
-				entry->location.objectid, entry->location.type,
-				entry->location.offset);
-
-		mem_footprint += entry->size;
-
-		if (entry->type == BTRFS_ACID_LOG_READ) {
-			BTRFS_SUB_DBG(TX_COMMIT, "\tfirst: %d, last: %d\n",
-				((struct btrfs_acid_log_rw *) entry->data)->first_page,
-				((struct btrfs_acid_log_rw *) entry->data)->last_page);
-		}
-	}
-
-	/* Print the write-set log */
-	head = &snap->write_log;
-	BTRFS_SUB_DBG(TX_COMMIT, "--------- WRITE SET ----------\n");
-	list_for_each_entry(entry, head, list) {
-		BTRFS_SUB_DBG(TX_COMMIT, "clock %d, type %d, size: %d, "
-				"location [%llu %d %llu]\n",
-				entry->clock, entry->type, entry->size,
-				entry->location.objectid, entry->location.type,
-				entry->location.offset);
-
-		mem_footprint += entry->size;
-
-		if (entry->type == BTRFS_ACID_LOG_WRITE) {
-			BTRFS_SUB_DBG(TX_COMMIT, "\tfirst: %d, last: %d\n",
-				((struct btrfs_acid_log_rw *) entry->data)->first_page,
-				((struct btrfs_acid_log_rw *) entry->data)->last_page);
-		}
-	}
-
-	BTRFS_SUB_DBG(TX_COMMIT, "---- MEM FOOTPRINT = %llu bytes------\n",
-			mem_footprint);
+	__commit_print_sets(snap);
 
 out:
 	dput(sv_dentry);
 
-	/* NOTE:
-	 * This hangs the kernel. We shall take it as a fight for another day. */
-/*	if (ret >= 0) {
+
+//#if 0
+	if (ret >= 0) {
+//		ret = btrfs_acid_commit_snapshot(snap, parent_dentry, parent_inode);
+		ret = btrfs_acid_commit_snapshot(snap, parent_inode, sv_dentry->d_inode);
+		if (ret < 0)
+			BTRFS_SUB_DBG(TX_COMMIT, "Error committing snapshot\n");
+	}
+//#endif
+
+#if 0
+	if (ret >= 0) {
 		ret = btrfs_acid_destroy_snapshot(snap, fs_info);
 		if (ret < 0) {
-			BTRFS_SUB_DBG(COMMIT, "Error destroying snapshot\n");
+			BTRFS_SUB_DBG(TX_COMMIT, "Error destroying snapshot\n");
 		}
-	}*/
+	}
+#endif
+
+	dput(parent_dentry);
 
 	return ret;
 }
+
+//#if 0
+/**
+ * btrfs_acid_commit_snapshot - Commits a snapshot to the master branch.
+ *
+ */
+int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
+		struct inode * parent_inode, struct inode * snap_inode)
+{
+	struct btrfs_acid_snapshot * txsv;
+	struct btrfs_trans_handle * trans;
+	struct btrfs_acid_ctl * ctl;
+	struct btrfs_fs_info * fs_info;
+	u64 root_objectid;
+	int err, ret = 0;
+
+	struct inode * txsv_inode;
+	struct btrfs_root * parent_root;
+	struct btrfs_key txsv_location;
+	struct qstr * txsv_name;
+	u64 txsv_link_index, snap_link_index;
+	char * txsv_bak_name;
+	int txsv_bak_name_len;
+	int txsv_initial_gen;
+	int txsv_gen_len, i;
+
+	if (!snap || !parent_inode || !snap_inode)
+		return -EINVAL;
+
+	fs_info = snap->root->fs_info;
+	ctl = &fs_info->acid_ctl;
+
+	down_write(&ctl->sv_sem);
+	txsv = ctl->sv;
+
+	parent_root = BTRFS_I(parent_inode)->root;
+	txsv_name = &txsv->path;
+
+	/* It is viable to use __snapshot_create_path for this, although it should
+	 * suffer some tuning.
+	 */
+	txsv_initial_gen = i = txsv->root->root_key.offset;
+	if (!i) i ++;
+	for (txsv_gen_len = 0; i; i /= 10, txsv_gen_len ++);
+	txsv_bak_name_len = txsv->path.len + 1 + txsv_gen_len;
+	txsv_bak_name = kzalloc(txsv_bak_name_len+1, GFP_NOFS);
+	if (!txsv_bak_name) {
+		ret = -ENOMEM;
+		goto out_up_write_sv;
+	}
+	BTRFS_SUB_DBG(TX_COMMIT, "txsvn_gen_len = %d\ngen = %d\n",
+			txsv_gen_len, txsv_initial_gen);
+	memcpy(txsv_bak_name, (void *) txsv->path.name, txsv->path.len);
+	txsv_bak_name[txsv->path.len] = '@';
+	snprintf(txsv_bak_name+txsv->path.len+1, txsv_gen_len+1,
+			"%d", txsv_initial_gen);
+	BTRFS_SUB_DBG(TX_COMMIT, "TxSv = %.*s, bak name = %.*s\n",
+			txsv->path.len, txsv->path.name,
+			txsv_bak_name_len, txsv_bak_name);
+
+	txsv_location.objectid = btrfs_root_dirid(&txsv->root->root_item);
+	txsv_location.type = BTRFS_INODE_ITEM_KEY;
+	txsv_location.offset = 0;
+	txsv_inode = btrfs_iget(fs_info->sb, &txsv_location, txsv->root, NULL);
+	if (IS_ERR_OR_NULL(txsv_inode)) {
+		BTRFS_SUB_DBG(TX_COMMIT, "TxSv does not exist. Should clean up.\n");
+		ret = (IS_ERR(txsv_inode) ? PTR_ERR(txsv_inode) : -ENOENT);
+		goto out_up_write_sv;
+	}
+
+	/* We're going with 20 items just to be safe. Further calculations
+	 * should be made. */
+	trans = btrfs_start_transaction(parent_root, 20);
+	if (IS_ERR(trans)) {
+		ret = PTR_ERR(trans);
+		goto out_put_txsv_inode;
+	}
+
+	btrfs_set_trans_block_group(trans, parent_inode);
+	parent_root->fs_info->last_trans_log_full_commit = trans->transid;
+
+	ret = btrfs_unlink_subvol(trans, parent_root, parent_inode,
+			txsv->root->root_key.objectid, txsv_name->name, txsv_name->len);
+	BUG_ON(ret < 0);
+
+	ret = btrfs_set_inode_index(parent_inode, &txsv_link_index);
+	BUG_ON(ret);
+
+	ret = btrfs_add_link(trans, parent_inode, txsv_inode,
+			txsv_bak_name, txsv_bak_name_len, 0, txsv_link_index);
+	BUG_ON(ret < 0);
+
+	ret = btrfs_unlink_subvol(trans, parent_root, parent_inode,
+			snap->root->root_key.objectid, snap->path.name, snap->path.len);
+	BUG_ON(ret < 0);
+
+	ret = btrfs_set_inode_index(parent_inode, &snap_link_index);
+	BUG_ON(ret);
+	ret = btrfs_add_link(trans, parent_inode, snap_inode,
+			txsv_name->name, txsv_name->len, 0, snap_link_index);
+	BUG_ON(ret < 0);
+
+	ret = btrfs_commit_transaction(trans, fs_info->tree_root);
+	BUG_ON(ret);
+
+#if 0
+	if (!snap || !parent_dentry || !parent_dir)
+		return -EINVAL;
+
+	fs_info = snap->root->fs_info;
+	ctl = &fs_info->acid_ctl;
+
+	down_write(&ctl->sv_sem);
+	txsv = ctl->sv;
+
+
+//#if 0
+	trans = btrfs_start_transaction(txsv->root, 20);
+	if (IS_ERR(trans))
+		return PTR_ERR(trans);
+
+	/* We may need the txsv's parent inode here. How should we get it? */
+	/* btrfs_set_trans_block_group() */
+	btrfs_set_trans_block_group(trans, parent_dir);
+
+	root_objectid = txsv->root->root_key.objectid;
+
+	err = btrfs_unlink_subvol(trans, BTRFS_I(parent_dir)->root,
+			parent_dir, root_objectid,
+			txsv->path.name, txsv->path.len);
+	BUG_ON(err);
+
+//	btrfs_add_link(trans, parent_dir,);
+//#endif
+	btrfs_invalidate_inodes(txsv->root);
+
+	up_write(&fs_info->acid_ctl.sv_sem);
+#endif
+
+out_up_write_sv:
+	up_write(&ctl->sv_sem);
+out_put_txsv_inode:
+	iput(txsv_inode);
+
+	return ret;
+}
+//#endif
 
 /**
  * btrfs_acid_change_root -- From the perspective of the file system, one
@@ -1166,14 +1371,16 @@ int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
 	struct btrfs_key parent_location;
 	struct btrfs_key snap_inode_location;
 	struct btrfs_key snap_item_key;
-	struct btrfs_path * path;
-	struct btrfs_dir_item * di;
+//	struct btrfs_path * path;
+//	struct btrfs_dir_item * di;
 	int ret = 0, err = 0;
 
 	if (!snap || !fs_info)
 		return -EINVAL;
 
-	if (!snap->root || !snap->location || !snap->src_location)
+//	if (!snap->root || !snap->location || !snap->src_location)
+	if (!snap->root || __is_null_key(&snap->location)
+			|| __is_null_key(&snap->src_location))
 		return -EINVAL;
 
 	parent_location.objectid = snap->parent_ino;
@@ -1236,9 +1443,9 @@ int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
 	}
 
 	/* remove the snapshot item from the tree root */
-	snap_item_key.objectid = snap->src_location->objectid;
+	snap_item_key.objectid = snap->src_location.objectid;
 	snap_item_key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
-	snap_item_key.offset = snap->location->objectid;
+	snap_item_key.offset = snap->location.objectid;
 	err = btrfs_delete_snapshot_item(trans, fs_info->tree_root, &snap_item_key);
 	BUG_ON(err);
 	btrfs_record_root_in_trans(trans, fs_info->tree_root);
@@ -1378,7 +1585,7 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	 */
 
 	/* Adds the snapshot to the snapshot's tree */
-	snap = __snapshot_add(pending->snap, &snap_path);
+	snap = __snapshot_add(pending->snap, &snap_path, dir);
 	if (!snap || IS_ERR(snap))
 	{
 		BTRFS_SUB_DBG(FS,
@@ -1664,10 +1871,10 @@ int btrfs_acid_init_cleanup(struct btrfs_fs_info * fs_info)
 		BTRFS_SUB_DBG(TX,
 				"Snapshot Item: snap key = [%llu %d %llu], "
 				"src key = [%llu %d %llu]\n",
-				snap->location->objectid, snap->location->type,
-				snap->location->offset,
-				snap->src_location->objectid, snap->src_location->type,
-				snap->src_location->offset);
+				snap->location.objectid, snap->location.type,
+				snap->location.offset,
+				snap->src_location.objectid, snap->src_location.type,
+				snap->src_location.offset);
 		BTRFS_SUB_DBG(TX,
 				"Snapshot Item: dirid = %llu, index = %llu, owner = %llu, "
 				"name len = %d, name = %.*s\n",
@@ -1689,13 +1896,13 @@ loop_again:
 		snap = snap_entry->snap;
 		if (!snap->root)
 		{
-			snap->root = btrfs_read_fs_root_no_name(fs_info, snap->location);
+			snap->root = btrfs_read_fs_root_no_name(fs_info, &snap->location);
 			if (IS_ERR_OR_NULL(snap->root))
 			{
 				BTRFS_SUB_DBG(TX,
 						"Unable to find root for [%llu %d %llu]\n",
-						snap->location->objectid,
-						snap->location->type, snap->location->offset);
+						snap->location.objectid,
+						snap->location.type, snap->location.offset);
 				continue;
 			}
 			btrfs_acid_destroy_snapshot(snap, fs_info);
@@ -1763,7 +1970,10 @@ out:
 	return ret;
 }
 
-/* Reads a snapshot item from a leaf, as long as the 'leaf' extent buffer
+/**
+ * __snapshot_read_leaf - Read a snapshot item from a leaf.
+ *
+ * Reads a snapshot item from a leaf, as long as the 'leaf' extent buffer
  * exists and 'si' is the correct snapshot item offset.
  * This method will return a struct btrfs_acid_snapshot filled only with the
  * data available on the leaf. This means it will not fill the 'root' field, as
@@ -1788,13 +1998,14 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 	snap = kzalloc(sizeof(*snap), GFP_NOFS);
 	if (!snap)
 		goto err;
+#if 0
 	snap->location = kzalloc(sizeof(*snap->location), GFP_NOFS);
 	if (!snap->location)
 		goto err_free_snap;
 	snap->src_location = kzalloc(sizeof(*snap->src_location), GFP_NOFS);
 	if (!snap->src_location)
 		goto err_free_snap_location;
-
+#endif
 	btrfs_snapshot_snap_key(leaf, si, &snap_disk_key);
 	btrfs_snapshot_src_key(leaf, si, &src_disk_key);
 	BTRFS_SUB_DBG(FS,
@@ -1802,8 +2013,8 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 			snap_disk_key.objectid, snap_disk_key.type, snap_disk_key.offset,
 			src_disk_key.objectid, src_disk_key.type, src_disk_key.offset);
 
-	btrfs_disk_key_to_cpu(snap->location, &snap_disk_key);
-	btrfs_disk_key_to_cpu(snap->src_location, &src_disk_key);
+	btrfs_disk_key_to_cpu(&snap->location, &snap_disk_key);
+	btrfs_disk_key_to_cpu(&snap->src_location, &src_disk_key);
 	snap->owner_pid = btrfs_snapshot_owner_pid(leaf, si);
 	snap->parent_ino = btrfs_snapshot_dirid(leaf, si);
 	snap->dir_index = btrfs_snapshot_dir_index(leaf, si);
@@ -1827,9 +2038,9 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 err_free_path_name:
 	kfree(snap->path.name);
 err_free_src_location:
-	kfree(snap->src_location);
+//	kfree(snap->src_location);
 err_free_snap_location:
-	kfree(snap->location);
+//	kfree(snap->location);
 err_free_snap:
 	kfree(snap);
 err:
@@ -1846,12 +2057,11 @@ static int __snapshot_destroy(struct btrfs_acid_snapshot * snap)
 	if (!snap)
 		return -EINVAL;
 
-	if (snap->location)	kfree(snap->location);
-	if (snap->src_location) kfree(snap->src_location);
+//	if (snap->location)	kfree(snap->location);
+//	if (snap->src_location) kfree(snap->src_location);
 	if (snap->path.name) kfree(snap->path.name);
 
 	kfree(snap);
-	snap = NULL;
 
 	return 0;
 }
@@ -1918,9 +2128,23 @@ fail:
  *
  * - Anyway, it is probably best to set those fields, just in case we forget
  * this pretty little rule and end up trying to dereference a bunch of zeros.
+ *
+ * 	Dear past-me,
+ * 		We did just that. Trying to destroy a in-memory snapshot using a method
+ * 		that assumes both src_location and location are set. You did a fine
+ * 		job messing our lives here in the future. Thank you very much.
+ * 		Now we have to deal with your mess just because you were too lazy to
+ * 		do things the proper way. Whichever that way is...
+ * 		Truly yours,
+ * 		present-me.
+ *
+ * Dear past-me,
+ * 		It's present-me again. My apologies. You were doing just fine.
+ * 		This means I don't know what the hell on earth is going on.
+ * 		Keep up the good work.
  */
-static struct btrfs_acid_snapshot *
-__snapshot_add(struct btrfs_root * root, struct qstr * path)
+static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
+		struct qstr * path, struct inode * parent)
 {
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_acid_snapshot * snap;
@@ -1937,21 +2161,21 @@ __snapshot_add(struct btrfs_root * root, struct qstr * path)
 
 	/* lookup snapshot item -- Why? */
 
-	snap->location = btrfs_acid_copy_key(&root->root_key);
-	if (IS_ERR(snap->location))
-	{
+	ret = btrfs_acid_copy_key(&snap->location, &root->root_key);
+	if (ret < 0) {
 		kfree(snap);
-		return ERR_CAST(snap->location);
+		return ERR_PTR(ret);
 	}
 
 	down_read(&ctl->sv_sem);
-	BUG_ON(!ctl->sv->location);
-	snap->src_location = btrfs_acid_copy_key(ctl->sv->location);
+	BUG_ON(__is_null_key(&ctl->sv->location));
+	ret = btrfs_acid_copy_key(&snap->src_location, &ctl->sv->location);
+	BUG_ON(ret);
 	up_read(&ctl->sv_sem);
 
-//	snap->location = &root->root_key;
 	snap->root = root;
 	snap->owner_pid = current->pid;
+	snap->parent_ino = parent->i_ino;
 
 	INIT_LIST_HEAD(&snap->known_pids);
 	init_rwsem(&snap->known_pids_sem);
@@ -2584,6 +2808,7 @@ long btrfs_acid_fallocate(struct inode * inode, int mode,
 		goto out;
 
 //	err = btrfs_acid_log_write()
+out:
 	return ret;
 }
 

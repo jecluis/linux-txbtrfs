@@ -1251,7 +1251,7 @@ out:
 static const struct vm_operations_struct btrfs_file_vm_ops = {
 	.fault		= filemap_fault,
 	.page_mkwrite	= btrfs_page_mkwrite,
-	.open = btrfs_acid_vm_open,
+//	.open = btrfs_acid_vm_open,
 };
 
 int btrfs_file_mmap(struct file	*filp, struct vm_area_struct *vma)
@@ -1276,8 +1276,8 @@ const struct file_operations btrfs_file_operations = {
 	.splice_read	= generic_file_splice_read,
 	.aio_write	= btrfs_file_aio_write,
 	.mmap		= btrfs_file_mmap,
-//	.open		= generic_file_open,
-	.open		= btrfs_acid_file_open,
+	.open		= generic_file_open,
+//	.open		= btrfs_acid_file_open,
 	.release	= btrfs_release_file,
 	.fsync		= btrfs_sync_file,
 	.unlocked_ioctl	= btrfs_ioctl,

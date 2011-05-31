@@ -188,7 +188,7 @@ int btrfs_acid_log_getattr(struct dentry * dentry)
 		return PTR_ERR(log_entry);
 	}
 
-	BTRFS_SUB_DBG(LOG, "GET-ATTR: Adding to write-log\n");
+	BTRFS_SUB_DBG(LOG, "GET-ATTR: Adding to read-log\n");
 	list_add(&log_entry->list, &snap->read_log);
 
 	return 0;

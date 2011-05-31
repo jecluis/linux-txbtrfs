@@ -33,7 +33,8 @@
 #include "extent_io.h"
 #include "extent_map.h"
 #include "async-thread.h"
-#include "txbtrfs.h"
+//#include "txbtrfs.h"
+#include "txbtrfs-ctl.h"
 
 struct btrfs_trans_handle;
 struct btrfs_transaction;

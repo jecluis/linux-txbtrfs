@@ -15,61 +15,29 @@
  * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
  * Boston, MA 021110-1307, USA.
  */
-#ifndef __BTRFS_TXBTRFS__
-#define __BTRFS_TXBTRFS__
+#ifndef __BTRFS_TXBTRFS_CTL__
+#define __BTRFS_TXBTRFS_CTL__
 
-#include <linux/fs.h>
-#include <linux/kernel.h>
-#include <linux/dcache.h>
-#include "ioctl.h"
-#include "txbtrfs-ctl.h"
-#include "ctree.h"
-
-#if 0
-
-struct btrfs_key;
-struct btrfs_root;
 struct btrfs_fs_info;
-struct btrfs_trans_handle;
 
-#endif /* if 0 */
-
-/* txbtrfs specific structs */
-struct btrfs_acid_snapshot_pid
+/* struct btrfs_acid_ctl - Allows finer control over the ACID component.
+ *
+ * To be kept as a field in 'struct btrfs_fs_info', as a control point for
+ * all things related to txbtrfs.
+ */
+struct btrfs_acid_ctl
 {
-	struct list_head list;
-	pid_t pid;
+	struct rw_semaphore sv_sem;
+	struct btrfs_acid_snapshot * sv;
+
+	struct rw_semaphore curr_snaps_sem;
+	struct radix_tree_root current_snapshots;
+
+	atomic_t clock;
 };
 
-struct btrfs_acid_snapshot
-{
-	struct btrfs_root * root;
-	struct btrfs_key location;
-	struct btrfs_key src_location;
-	struct qstr path;
-	unsigned long long hash;
-	u64 gen;
-	pid_t owner_pid;
 
-	atomic_t usage_count;
-
-	struct rw_semaphore known_pids_sem;
-	struct list_head known_pids;
-
-	u64 parent_ino;
-	u64 dir_index;
-
-	int dead:1;
-	int committed:1;
-
-	// read-set
-	struct list_head read_log;
-	// write-set
-	struct list_head write_log;
-};
-
-#if 0
-///* Debug macros */
+/* Debug macros */
 #define __TXBTRFS_DEBUG__
 
 #ifdef __TXBTRFS_DEBUG__
@@ -155,66 +123,11 @@ struct btrfs_acid_snapshot
 #define BTRFS_SUB_DBG(sub, fmt, args...) do {} while (0)
 #endif /* __TXBTRFS_DEBUG__ */
 
-#endif /* if 0 */
 
 
-/* external methods */
-//struct btrfs_key * btrfs_acid_copy_key(struct btrfs_key * src);
-int btrfs_acid_copy_key(struct btrfs_key * dst, struct btrfs_key * src);
+int btrfs_acid_init(struct btrfs_fs_info * fs_info);
 
-//int btrfs_acid_init(struct btrfs_fs_info * fs_info);
 
-int btrfs_acid_tx_start(struct file * file);
-int btrfs_acid_tx_commit(struct file * file);
-int btrfs_acid_change_root(struct file * file,
-		struct btrfs_ioctl_acid_change_root_args * args);
-struct btrfs_acid_snapshot *
-btrfs_acid_create_snapshot(struct dentry * txsv_dentry);
-int btrfs_acid_create_snapshot_by_ioctl(struct file * file,
-		struct btrfs_ioctl_acid_create_snapshot_args * args);
-int btrfs_insert_snapshot_item(struct btrfs_trans_handle * trans,
-		struct btrfs_root * tree_root, struct btrfs_key * src_key,
-		struct btrfs_key * snap_key,
-		u64 dir, struct dentry * dentry, u64 dir_index);
-int btrfs_acid_file_open(struct inode * inode, struct file * file);
-void btrfs_acid_vm_open(struct vm_area_struct * area);
-int btrfs_acid_set_tx_subvol(struct file * file,
-		struct btrfs_ioctl_acid_subvol_flags_args * args);
-int btrfs_acid_d_hash(struct dentry * dentry, struct qstr * str);
-int btrfs_acid_d_revalidate(struct dentry * dentry, struct nameidata * nd);
-int btrfs_is_acid_subvol(struct btrfs_root * root);
-int btrfs_is_acid_inode(struct inode * inode);
-struct btrfs_acid_snapshot *
-btrfs_acid_find_valid_ancestor(struct btrfs_acid_ctl * ctl,
-		struct task_struct * task, pid_t * found_pid);
-int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
-		struct inode * parent_inode, struct inode * snap_inode);
-
-/* inline methods */
-//static inline int btrfs_acid_tx_commit(void) { return -EOPNOTSUPP; }
-static inline int btrfs_acid_tx_abort(void) {return -EOPNOTSUPP; }
-
-static inline struct btrfs_acid_snapshot *
-btrfs_acid_current_snapshot(struct btrfs_acid_ctl * ctl)
-{
-	struct btrfs_acid_snapshot * snap;
-
-	down_read(&ctl->curr_snaps_sem);
-	snap = radix_tree_lookup(&ctl->current_snapshots, current->pid);
-	up_read(&ctl->curr_snaps_sem);
-
-	return snap;
-}
-
-/**
- * __is_null_key - returns true iif 'key' is NULL or is filled with zeros.
- */
-static inline int __is_null_key(struct btrfs_key * key)
-{
-	return (!key || (!key->objectid && !key->type && !key->offset));
-}
-
-/*
 extern const struct inode_operations btrfs_acid_dir_inode_operations;
 extern const struct inode_operations btrfs_acid_dir_ro_inode_operations;
 extern const struct file_operations btrfs_acid_dir_file_operations;
@@ -226,5 +139,5 @@ extern const struct inode_operations btrfs_acid_symlink_inode_operations;
 extern const struct dentry_operations btrfs_acid_dentry_operations;
 extern const struct file_operations btrfs_acid_file_operations;
 extern const struct vm_operations_struct btrfs_acid_file_vm_ops;
-*/
-#endif /* __BTRFS_TXBTRFS__ */
+
+#endif /* __BTRFS_TXBTRFS_CTL__ */
