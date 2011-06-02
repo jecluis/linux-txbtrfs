@@ -287,6 +287,24 @@ static struct btrfs_acid_snapshot * __txsv_create(struct btrfs_root * sv,
 	return snap;
 }
 
+static void __txsv_destroy(struct btrfs_acid_snapshot * txsv)
+{
+	if (!txsv)
+		return;
+
+	if (txsv->path.name)
+		kfree(txsv->path.name);
+	kfree(txsv);
+}
+
+static void __cleanup_txsv_entry_destroy(struct txsv_cleanup_list * entry)
+{
+	if (!entry)
+		return;
+	__txsv_destroy(entry->root);
+	kfree(entry);
+}
+
 /**
  * __cleanup_find_all_txsv - Helper method for cleaning up tx subvolumes.
  *
@@ -465,6 +483,7 @@ out:
 	return ret;
 }
 
+#if 0
 /** __cleanup_acid_commit_inconsistencies - Fix any commit inconsistency found.
  *
  * If we reach this method, it means the post-commit phase failed unexpectadly.
@@ -519,37 +538,6 @@ __cleanup_acid_commit_inconsistencies(struct btrfs_acid_snapshot * tmp,
 		return ret;
 	}
 
-#if 0
-	path = btrfs_alloc_path();
-	if (!path)
-		return -ENOMEM;
-
-	ret = btrfs_find_root_ref(fs_info->tree_root, path,
-			BTRFS_FS_TREE_OBJECTID, new->location.objectid);
-	WARN_ON(ret);
-	if (ret)
-		goto out;
-
-	leaf = path->nodes[0];
-	ref = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_root_ref);
-
-	if (btrfs_root_ref_name_len(leaf, ref) != new->path.len) {
-		BTRFS_SUB_DBG(TX, "NEW name len (%d) != ROOT_REF name len (%d)\n",
-				new->path.len, btrfs_root_ref_name_len(leaf, ref));
-		goto out;
-	}
-
-	ret = memcmp_extent_buffer(leaf, new->path.name,
-			(unsigned long) (ref + 1), new->path.len);
-	if (ret) {
-		BTRFS_SUB_DBG(TX, "NEW Name mismatch with ROOT_REF!\n");
-		WARN(1, "MUST CLEANUP!\n");
-		goto out;
-	}
-
-	/* If they have the same name, let's check for the snapshot item. */
-	BTRFS_SUB_DBG(TX, "NEW and ROOT_REF have the same name!\n");
-#endif
 //#if 0
 	/* We'd rather look for the snapshot item twice (once to check for it and
 	 * another to remove it), than using just the delete method and have to
@@ -636,6 +624,8 @@ out:
 	btrfs_free_path(path);
 	return ret;
 }
+#endif
+
 
 /**
  * __cleanup_acid_commit_snapshot - Remove a txsv root's snapshot item.
@@ -998,8 +988,10 @@ okay:
 				tree_root->fs_info);
 		WARN((ret < 0), "ERROR: While destroying backup TxSv root\n");
 
-		WARN(1, "REASON: MEM LEAKING !!\n");
 		list_del(&txsv_old_entry->list);
+		__cleanup_txsv_entry_destroy(txsv_old_entry);
+		__cleanup_txsv_entry_destroy(old_entry);
+		__cleanup_txsv_entry_destroy(new_entry);
 	}
 
 out:
@@ -1634,10 +1626,6 @@ int btrfs_acid_tx_commit(struct file * file)
 
 	__commit_print_sets(snap);
 
-out:
-	dput(sv_dentry);
-
-
 //#if 0
 	if (ret >= 0) {
 //		ret = btrfs_acid_commit_snapshot(snap, parent_dentry, parent_inode);
@@ -1656,6 +1644,8 @@ out:
 	}
 #endif
 
+out:
+	dput(sv_dentry);
 	dput(parent_dentry);
 
 	return ret;
@@ -2808,7 +2798,7 @@ int btrfs_acid_init(struct btrfs_fs_info * fs_info)
 	down_write(&ctl->sv_sem);
 	ctl->sv = txsv;
 	up_write(&ctl->sv_sem);
-#if 0
+#if 1
 	ret = btrfs_acid_init_cleanup(fs_info);
 	if (ret)
 		BTRFS_SUB_DBG(TX, "Cleanup returned error %d\n", ret);
