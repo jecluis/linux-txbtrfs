@@ -181,6 +181,8 @@ int btrfs_delete_snapshot_item(struct btrfs_trans_handle * trans,
 int btrfs_insert_tx_subvol_item(struct btrfs_trans_handle * trans,
 		struct btrfs_root * tree_root, struct btrfs_key * subvol_key,
 		struct qstr * subvol_name, unsigned long parent_ino, u64 superseeder);
+int btrfs_delete_tx_subvol_item(struct btrfs_trans_handle * trans,
+		struct btrfs_root * root, struct btrfs_key * location);
 int btrfs_acid_file_open(struct inode * inode, struct file * file);
 void btrfs_acid_vm_open(struct vm_area_struct * area);
 int btrfs_acid_set_tx_subvol(struct file * file,
