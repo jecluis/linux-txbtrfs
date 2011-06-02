@@ -42,6 +42,13 @@ struct snapshot_list
 	struct list_head list;
 };
 
+struct txsv_cleanup_list
+{
+	struct btrfs_key key;
+	struct btrfs_acid_snapshot * root;
+	struct list_head list;
+};
+
 
 
 /*
@@ -248,7 +255,7 @@ out:
 	return objective;
 }
 
-static struct btrfs_acid_snapshot * fill_acid_txsv(struct btrfs_root * sv,
+static struct btrfs_acid_snapshot * __txsv_create(struct btrfs_root * sv,
 		struct btrfs_key * key, unsigned long parent_ino,
 		char * name, int name_len)
 {
@@ -282,6 +289,428 @@ static struct btrfs_acid_snapshot * fill_acid_txsv(struct btrfs_root * sv,
 	return snap;
 }
 
+/**
+ * __cleanup_find_all_txsv - Helper method for cleaning up tx subvolumes.
+ *
+ * Find all items in the tree of type BTRFS_ACID_TX_SUBVOL_ITEM_KEY and
+ * returns them in list 'head'.
+ *
+ * This method is useful to leverage the code burden on
+ * __cleanup_acid_subvol_inconsistencies().
+ */
+static int
+__cleanup_find_all_txsv(struct btrfs_root * tree_root, struct list_head * head)
+{
+	int ret;
+	struct btrfs_path * path;
+	struct btrfs_key location;
+	struct btrfs_key found_key, txsv_key;
+	struct btrfs_disk_key disk_key;
+	struct extent_buffer * leaf;
+	struct btrfs_acid_tx_subvol_item * ti;
+	struct btrfs_acid_snapshot * txsv;
+	struct txsv_cleanup_list * lst_entry;
+	struct btrfs_root * sv_root;
+	u16 txsv_name_len;
+	u64 txsv_parent_ino;
+	char * txsv_name;
+	int slot;
+
+	/* search based on 'debug-tree.c' from 'btrfs-progs-unstable'. */
+
+	location.objectid = 0;
+	location.offset = 0;
+	btrfs_set_key_type(&location, BTRFS_ACID_TX_SUBVOL_ITEM_KEY);
+
+	BTRFS_SUB_DBG(TX, "\n");
+
+	path = btrfs_alloc_path();
+	if (!path)
+		return ERR_PTR(-ENOMEM);
+
+	/* As we are running in the very beginning, before the FS is even mounted,
+	 * we shouldn't be concerned with parallel accesses to the tree. Also, if
+	 * we keep locks, once we call 'btrfs_read_fs_root_no_name' we will hang.
+	 * If we ever find another way to release the locks before calling that
+	 * method, this should be discarded.
+	 */
+	path->skip_locking = 1;
+
+	ret = btrfs_search_slot(NULL, tree_root, &location, path, 0, 0);
+	BUG_ON(ret < 0); /* wtf happened? */
+	/* Against all we expected, 'ret' can be 1 even if there are items in the
+	 * leaves. Go figure... */
+
+	/* basic idea, loop until 'btrfs_next_leaf' returns something different
+	 * than zero, meaning we have no more leaves that match our criteria.
+	 * Each item we find, we create a snapshot item with the txsv found, and
+	 * we add it to the list received as argument.
+	 */
+	while (1)
+	{
+		leaf = path->nodes[0];
+		slot = path->slots[0];
+
+		if (slot >= btrfs_header_nritems(leaf))
+		{
+			ret = btrfs_next_leaf(tree_root, path);
+			if (ret != 0) /* no more leafs. */
+				break;
+
+			leaf = path->nodes[0];
+			slot = path->slots[0];
+		}
+
+		btrfs_item_key(leaf, &disk_key, slot);
+		btrfs_disk_key_to_cpu(&found_key, &disk_key);
+
+		if (btrfs_key_type(&found_key) != BTRFS_ACID_TX_SUBVOL_ITEM_KEY)
+			goto loop_again;
+
+		BTRFS_SUB_DBG(TX, "Found tx subvol item: [%llu %d %llu]\n",
+				found_key.objectid, found_key.type, found_key.offset);
+
+		ti = btrfs_item_ptr(leaf, slot, struct btrfs_acid_tx_subvol_item);
+		if (IS_ERR_OR_NULL(ti))
+		{
+			// TODO: handle error condition.
+			BUG();
+		}
+
+		btrfs_tx_subvol_key(leaf, ti, &disk_key);
+		btrfs_disk_key_to_cpu(&txsv_key, &disk_key);
+		txsv_name_len = btrfs_tx_subvol_name_len(leaf, ti);
+		txsv_parent_ino = btrfs_tx_subvol_parent_dirid(leaf, ti);
+
+		txsv_name = kzalloc(sizeof(char) * txsv_name_len, GFP_NOFS);
+		BUG_ON(!txsv_name);
+		read_extent_buffer(leaf, txsv_name, (unsigned long)(ti + 1),
+				txsv_name_len);
+
+		BTRFS_SUB_DBG(TX, "Tx Subvol root key: [%llu %d %llu], name: %.*s, "
+				"parent inode: %llu\n",
+				txsv_key.objectid, txsv_key.type, txsv_key.offset,
+				txsv_name_len, txsv_name,
+				txsv_parent_ino);
+
+		/* This key matches a transactional subvolume. Let's get its root. */
+		sv_root = btrfs_read_fs_root_no_name(tree_root->fs_info, &txsv_key);
+		BUG_ON(!sv_root);
+
+		txsv = __txsv_create(sv_root, &txsv_key, txsv_parent_ino,
+				txsv_name, txsv_name_len);
+		BUG_ON(IS_ERR(txsv));
+
+		lst_entry = kzalloc(sizeof(*lst_entry), GFP_NOFS);
+		BUG_ON(!lst_entry);
+
+		btrfs_acid_copy_key(&lst_entry->key, &found_key);
+		lst_entry->root = txsv;
+		list_add(&lst_entry->list, head);
+
+		/* something happened, let's keep trying. */
+loop_again:
+		path->slots[0] ++;
+	}
+	btrfs_free_path(path);
+
+	return 0;
+}
+
+/** __cleanup_acid_commit_inconsistencies - Fix any commit inconsistency found.
+ *
+ * If we reach this method, it means the post-commit phase failed unexpectadly.
+ *
+ * We must check if the renames were properly made, and the snapshot items
+ * removed. If so, we just have to remove the the old txsv item, as well
+ * as the old txsv root. Otherwise, we must fix the snapshot names, so they
+ * may be removed when the next cleanup phase comes.
+ *
+ * @tmp: the temporary item stating a transition between two TxSv's.
+ * @old: the old TxSv.
+ * @new: the new TxSv.
+ */
+static int
+//__cleanup_acid_commit_inconsistencies(struct btrfs_key * old_sv_key,
+//		struct btrfs_acid_snapshot * old_sv, struct btrfs_acid_snapshot * sv)
+__cleanup_acid_commit_inconsistencies(struct btrfs_acid_snapshot * tmp,
+		struct btrfs_acid_snapshot * old,
+		struct btrfs_acid_snapshot * new)
+{
+	struct btrfs_path * path;
+	struct btrfs_fs_info * fs_info;
+	struct extent_buffer * leaf;
+	struct btrfs_root_ref * ref;
+	struct btrfs_trans_handle * trans;
+	struct btrfs_key snap_item_key;
+	int ret = 0;
+
+	int slot, found;
+
+	if (!tmp || !old || !new)
+		return -EINVAL;
+
+	fs_info = tmp->root->fs_info;
+
+	BTRFS_SUB_DBG(TX, "TMP TxSv: name = %*.s, key [%llu %d %llu]\n",
+			tmp->path.len, tmp->path.name, tmp->location.objectid,
+			tmp->location.type, tmp->location.offset);
+	BTRFS_SUB_DBG(TX, "OLD TxSv: name = %*.s, key [%llu %d %llu]\n",
+				old->path.len, old->path.name, old->location.objectid,
+				old->location.type, old->location.offset);
+	BTRFS_SUB_DBG(TX, "NEW TxSv: name = %*.s, key [%llu %d %llu]\n",
+				new->path.len, new->path.name, new->location.objectid,
+				new->location.type, new->location.offset);
+
+	path = btrfs_alloc_path();
+	if (!path)
+		return -ENOMEM;
+
+	ret = btrfs_find_root_ref(fs_info->tree_root, path,
+			BTRFS_FS_TREE_OBJECTID, new->location.objectid);
+	WARN_ON(ret);
+	if (ret)
+		goto out;
+
+	leaf = path->nodes[0];
+	ref = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_root_ref);
+
+	if (btrfs_root_ref_name_len(leaf, ref) != new->path.len) {
+		BTRFS_SUB_DBG(TX, "NEW name len (%d) != ROOT_REF name len (%d)\n",
+				new->path.len, btrfs_root_ref_name_len(leaf, ref));
+		goto out;
+	}
+
+	ret = memcmp_extent_buffer(leaf, new->path.name,
+			(unsigned long) (ref + 1), new->path.len);
+	if (ret) {
+		BTRFS_SUB_DBG(TX, "NEW Name mismatch with ROOT_REF!\n");
+		WARN(1, "MUST CLEANUP!\n");
+		goto out;
+	}
+
+	/* If they have the same name, let's check for the snapshot item. */
+	BTRFS_SUB_DBG(TX, "NEW and ROOT_REF have the same name!\n");
+//#if 0
+	/* We'd rather look for the snapshot item twice (once to check for it and
+	 * another to remove it), than using just the delete method and have to
+	 * create a transaction when it might not even exist.
+	 */
+//	snap_item_key.objectid = new->location.objectid;
+	snap_item_key.objectid = 0;
+	snap_item_key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
+	snap_item_key.offset = new->location.objectid;
+//	snap_item_key.offset = 0;
+
+//	btrfs_release_path(fs_info->tree_root, path);
+	btrfs_free_path(path);
+	path = btrfs_alloc_path();
+	ret = btrfs_search_slot(NULL, fs_info->tree_root,
+			&snap_item_key, path, 0, 0);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX, "SEARCH SLOT ERROR\n");
+		goto out;
+	}
+
+	found = 0;
+	while (1)
+	{
+		leaf = path->nodes[0];
+		slot = path->slots[0];
+		BTRFS_SUB_DBG(TX, "leaf: start = %llu, slot = %d, nritems = %d\n",
+				leaf->start, slot, btrfs_header_nritems(leaf));
+		if (slot >= btrfs_header_nritems(leaf))
+		{
+			ret = btrfs_next_leaf(fs_info->tree_root, path);
+			if (ret != 0) /* no more leafs. */
+				break;
+
+			leaf = path->nodes[0];
+			slot = path->slots[0];
+		}
+
+		struct btrfs_disk_key dk;
+		btrfs_item_key(leaf, &dk, slot);
+		btrfs_item_key_to_cpu(leaf, &snap_item_key, slot);
+
+		BTRFS_SUB_DBG(TX, "dk [%llu %d %llu], k [%llu %d %llu]\n",
+				dk.objectid, dk.type, dk.offset,
+				snap_item_key.objectid, snap_item_key.type, snap_item_key.offset);
+
+		if (snap_item_key.type != BTRFS_ACID_SNAPSHOT_ITEM_KEY)
+			goto loop_again;
+
+		if (snap_item_key.offset = new->location.objectid) {
+			found = 1;
+			break;
+		}
+loop_again:
+		path->slots[0] ++;
+	}
+
+	if (!found) {
+		BTRFS_SUB_DBG(TX, "Snapshot item not found\n");
+		goto out;
+	} else
+		BTRFS_SUB_DBG(TX, "Found! [%llu %d %llu]\n",
+				snap_item_key.objectid, snap_item_key.type, snap_item_key.offset);
+//#if 0
+//	btrfs_item_key_to_cpu(path->nodes[0], &snap_item_key, path->slots[0]);
+//	btrfs_release_path(fs_info->tree_root, path);
+	btrfs_free_path(path);
+	path = btrfs_alloc_path();
+
+	trans = btrfs_start_transaction(fs_info->tree_root, 0);
+	if (IS_ERR(trans)) {
+		ret = PTR_ERR(trans);
+		goto out;
+	}
+
+
+	ret = btrfs_delete_snapshot_item(trans, fs_info->tree_root, &snap_item_key);
+	BUG_ON(ret != 0);
+
+	btrfs_end_transaction(trans, fs_info->tree_root);
+//#endif
+
+out:
+	btrfs_free_path(path);
+	return ret;
+}
+
+/** __cleanup_acid_subvol_inconsistencies - Remove inconsistencies due to an
+ * improper unmount or failure.
+ *
+ * In a nutshell, we will look for control BTRFS_ACID_TX_SUBVOL_ITEM_KEYs, in
+ * order to recreate a correct file system state. This cleanup is required
+ * since the system may fail during a transaction commit. We must then ensure
+ * that the file system will be either in a previous state to the commit, or in
+ * a future state, post-commit.
+ *
+ * We must also ensure the next step of the cleanup process, removing snapshots,
+ * will see the correct snapshot items and their location.
+ */
+static struct btrfs_acid_snapshot *
+__cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
+{
+	int ret = 0;
+	struct btrfs_root * sv = NULL;
+	struct btrfs_path * path;
+	struct btrfs_key location;
+	struct btrfs_key found_key;
+	struct btrfs_disk_key disk_key;
+	struct extent_buffer * leaf;
+
+	struct btrfs_acid_tx_subvol_item * ti;
+	struct btrfs_disk_key txsv_disk_key;
+	struct btrfs_key * txsv_key, * txsv_old_key;
+	unsigned long txsv_parent_ino;
+	int txsv_name_len;
+	char * txsv_name;
+
+	struct list_head found_subvols;
+	struct list_head potentially_old_subvols;
+	struct txsv_cleanup_list * txsv_entry, * tmp_entry;
+	struct txsv_cleanup_list * txsv_old_entry, * txsv_old_tmp_entry;
+	struct txsv_cleanup_list * old_entry, * new_entry;
+	int total_old_subvols = 0;
+
+	struct btrfs_acid_snapshot * txsv = NULL;
+	int slot;
+
+
+	INIT_LIST_HEAD(&found_subvols);
+	INIT_LIST_HEAD(&potentially_old_subvols);
+
+	ret = __cleanup_find_all_txsv(tree_root, &found_subvols);
+	BUG_ON(ret < 0);
+
+
+	list_for_each_entry_safe(txsv_entry, tmp_entry, &found_subvols, list) {
+		txsv = txsv_entry->root;
+		BTRFS_SUB_DBG(TX, "Found TxSv location [%llu %d %llu]\n",
+				txsv_entry->key.objectid, txsv_entry->key.type,
+				txsv_entry->key.offset);
+		if (!txsv) {
+			BTRFS_SUB_DBG(TX, "\t\tNULL ROOT\n");
+			BUG();
+		} else
+			BTRFS_SUB_DBG(TX, "key [%llu %d %llu]\n",
+					txsv->root->root_key.objectid, txsv->root->root_key.type,
+					txsv->root->root_key.offset);
+
+		if (txsv_entry->key.offset != 0) {
+			list_del(&txsv_entry->list);
+			list_add(&txsv_entry->list, &potentially_old_subvols);
+			total_old_subvols ++;
+		}
+	}
+
+	list_for_each_entry_safe(txsv_old_entry, txsv_old_tmp_entry,
+			&potentially_old_subvols, list) {
+		new_entry = old_entry = NULL;
+		txsv_old_key = &txsv_old_entry->root->location;
+
+		list_for_each_entry_safe(txsv_entry, tmp_entry, &found_subvols, list) {
+			txsv_key = &txsv_entry->root->location;
+
+			if (!memcmp(txsv_old_key, txsv_key, sizeof(*txsv_key)))
+				old_entry = txsv_entry;
+			else if (txsv_old_entry->key.offset == txsv_key->objectid)
+				new_entry = txsv_entry;
+			else
+				continue;
+
+			list_del(&txsv_entry->list);
+		}
+
+		if (old_entry) {
+			if (new_entry) {
+				BTRFS_SUB_DBG(TX, "We must clean up the commit!\n");
+				__cleanup_acid_commit_inconsistencies(txsv_old_entry->root,
+						old_entry->root, new_entry->root);
+			}
+			else {
+				BTRFS_SUB_DBG(TX, "We must clean up the subvolumes!\n");
+				/* This means removing the TX_SUBVOL_ITEM with
+				 * 'txsv_old_entry->key' from disk.
+				 */
+				WARN(1, "THIS IS NOT BEING DONE!\n");
+			}
+		}
+
+		BTRFS_SUB_DBG(TX, "MEM LEAKING\n");
+		list_del(&txsv_old_entry->list);
+	}
+
+//	if (list_empty(&found_subvols)) {
+//		BTRFS_SUB_DBG(TX, "Total OKAY TxSv's = %d\n", total_old_subvols);
+//		BUG_ON(total_old_subvols > 1);
+//	}
+
+#if 0
+	if (sv)
+	{
+		txsv = __txsv_create(sv, &txsv_key, txsv_parent_ino,
+				txsv_name, txsv_name_len);
+		if (IS_ERR_OR_NULL(txsv))
+			goto out;
+
+		BTRFS_SUB_DBG(TX, "Last key found is a Transactional Subvolume.\n");
+		BTRFS_SUB_DBG(TX, "TXSV: root %p key [%llu %d %llu] gen %llu\n",
+				txsv->root, txsv->location.objectid, txsv->location.type,
+				txsv->location.offset, (unsigned long long) txsv->gen);
+		BTRFS_SUB_DBG(TX, "TXSV: parent ino: %llu name: %.*s\n",
+				txsv->parent_ino, txsv->path.len, txsv->path.name);
+
+	}
+	else
+		BTRFS_SUB_DBG(TX, "No Transactional Subvolume found.\n");
+#endif
+
+out:
+	return txsv;
+}
 
 static struct btrfs_acid_snapshot *
 find_acid_subvol(struct btrfs_root * tree_root)
@@ -395,7 +824,7 @@ loop_again:
 
 	if (sv)
 	{
-		txsv = fill_acid_txsv(sv, &txsv_key, txsv_parent_ino,
+		txsv = __txsv_create(sv, &txsv_key, txsv_parent_ino,
 				txsv_name, txsv_name_len);
 		if (IS_ERR_OR_NULL(txsv))
 			goto out;
@@ -962,6 +1391,7 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	int txsv_bak_name_len;
 	int txsv_initial_gen;
 	int txsv_gen_len, i;
+	struct qstr txsv_bak_qstr;
 
 	if (!snap || !parent_inode || !snap_inode)
 		return -EINVAL;
@@ -996,6 +1426,9 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	BTRFS_SUB_DBG(TX_COMMIT, "TxSv = %.*s, bak name = %.*s\n",
 			txsv->path.len, txsv->path.name,
 			txsv_bak_name_len, txsv_bak_name);
+	txsv_bak_qstr.name = txsv_bak_name;
+	txsv_bak_qstr.len = txsv_bak_name_len;
+	txsv_bak_qstr.hash = full_name_hash(txsv_bak_name, txsv_bak_name_len);
 
 	txsv_location.objectid = btrfs_root_dirid(&txsv->root->root_item);
 	txsv_location.type = BTRFS_INODE_ITEM_KEY;
@@ -1006,6 +1439,24 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 		ret = (IS_ERR(txsv_inode) ? PTR_ERR(txsv_inode) : -ENOENT);
 		goto out_up_write_sv;
 	}
+
+	trans = btrfs_start_transaction(fs_info->extent_root, 2);
+	if (IS_ERR(trans)) {
+		ret = PTR_ERR(trans);
+		goto out_put_txsv_inode;
+	}
+
+	ret = btrfs_insert_tx_subvol_item(trans, fs_info->tree_root,
+			&txsv->root->root_key, &txsv_bak_qstr, txsv->parent_ino,
+			snap->root->root_key.objectid);
+	BUG_ON(ret < 0);
+
+	ret = btrfs_insert_tx_subvol_item(trans, fs_info->tree_root,
+			&snap->root->root_key, &txsv->path, snap->parent_ino, 0);
+	BUG_ON(ret < 0);
+
+	ret = btrfs_commit_transaction(trans, fs_info->extent_root);
+	BUG_ON(ret);
 
 	/* We're going with 20 items just to be safe. Further calculations
 	 * should be made. */
@@ -1219,8 +1670,10 @@ int btrfs_insert_snapshot_item(struct btrfs_trans_handle * trans,
 		return -ENOMEM;
 
 	key.objectid = src_key->objectid;
+//	key.objectid = snap_key->objectid;
 	key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
 	key.offset = snap_key->objectid;
+//	key.offset = src_key->objectid;
 
 	ret = btrfs_insert_empty_item(trans, tree_root, path, &key,
 				sizeof(*item) + dentry->d_name.len);
@@ -1291,9 +1744,22 @@ out:
 	return ret;
 }
 
+/**
+ * btrfs_insert_tx_subvol_item - Inserts a tx subvol item to the on-disk tree.
+ *
+ * This method receives quite a lot of arguments, but it eases the pain of
+ * allocating an item and then write the fields outside the method. Also, we
+ * don't expect anyone but us to use it, and it is used only in two or three
+ * different situations, so there is no point in overcomplicating stuff.
+ *
+ * Just as a brief reminder, 'superseeder' stands for the object id of the
+ * snapshot superseeding the tx subvol item being inserted. Whenever this
+ * method is called from a method inserting a brand-new tx subvol item, then
+ * this field should be 0 (zero), meaning it has never been superseeded.
+ */
 int btrfs_insert_tx_subvol_item(struct btrfs_trans_handle * trans,
 		struct btrfs_root * tree_root, struct btrfs_key * subvol_key,
-		struct qstr * subvol_name, unsigned long parent_ino)
+		struct qstr * subvol_name, unsigned long parent_ino, u64 superseeder)
 {
 	int ret = 0;
 	struct btrfs_acid_tx_subvol_item * item;
@@ -1312,7 +1778,7 @@ int btrfs_insert_tx_subvol_item(struct btrfs_trans_handle * trans,
 
 	key.objectid = subvol_key->objectid;
 	key.type = BTRFS_ACID_TX_SUBVOL_ITEM_KEY;
-	key.offset = 0;
+	key.offset = superseeder;
 
 	ret = btrfs_insert_empty_item(trans, tree_root, path, &key,
 			sizeof(*item) + subvol_name->len);
@@ -1444,8 +1910,10 @@ int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
 
 	/* remove the snapshot item from the tree root */
 	snap_item_key.objectid = snap->src_location.objectid;
+//	snap_item_key.objectid = snap->location.objectid;
 	snap_item_key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
 	snap_item_key.offset = snap->location.objectid;
+//	snap_item_key.offset = snap->src_location.objectid;
 	err = btrfs_delete_snapshot_item(trans, fs_info->tree_root, &snap_item_key);
 	BUG_ON(err);
 	btrfs_record_root_in_trans(trans, fs_info->tree_root);
@@ -1744,11 +2212,11 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	dentry_parent = dget_parent(dentry);
 	ret = btrfs_insert_tx_subvol_item(trans, sub_root->fs_info->tree_root,
 			&sub_root->root_key,
-			&dentry->d_name, dentry_parent->d_inode->i_ino);
+			&dentry->d_name, dentry_parent->d_inode->i_ino, 0);
 
 	btrfs_commit_transaction(trans, sub_root);
 
-	txsv = fill_acid_txsv(sub_root, &sub_root->root_key,
+	txsv = __txsv_create(sub_root, &sub_root->root_key,
 			dentry_parent->d_inode->i_ino,
 			(char *) dentry->d_name.name, dentry->d_name.len);
 	sub_root->fs_info->acid_ctl.sv = txsv;
@@ -1952,6 +2420,10 @@ int btrfs_acid_init(struct btrfs_fs_info * fs_info)
 	INIT_RADIX_TREE(&ctl->current_snapshots, GFP_ATOMIC);
 	ctl->sv = NULL;
 
+	BTRFS_SUB_DBG(TX, "\n");
+	__cleanup_acid_subvol_inconsistencies(fs_info->tree_root);
+
+	BTRFS_SUB_DBG(TX, "\n");
 	txsv = find_acid_subvol(fs_info->tree_root);
 	if (txsv == NULL)
 		goto out;
@@ -1959,10 +2431,13 @@ int btrfs_acid_init(struct btrfs_fs_info * fs_info)
 	down_write(&ctl->sv_sem);
 	ctl->sv = txsv;
 	up_write(&ctl->sv_sem);
-
+#if 0
 	ret = btrfs_acid_init_cleanup(fs_info);
 	if (ret)
 		BTRFS_SUB_DBG(TX, "Cleanup returned error %d\n", ret);
+#else
+#warning "COMPILING WITHOUT SNAPSHOT CLEANUP!"
+#endif
 
 	atomic_set(&ctl->clock, 0);
 
