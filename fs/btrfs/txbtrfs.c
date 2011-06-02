@@ -71,8 +71,6 @@ static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
 		struct qstr * path, pid_t pid);
 static void __snapshot_destroy_path(struct qstr * path);
 
-int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
-		struct btrfs_fs_info * fs_info);
 static int btrfs_has_acid_ancestor(struct btrfs_acid_ctl * ctl,
 		struct task_struct * task);
 
@@ -996,75 +994,13 @@ okay:
 		ret = btrfs_end_transaction(trans, tree_root);
 		BUG_ON(ret);
 
-//		ret = btrfs_acid_destroy_snapshot(txsv_old_entry->root,
-//				tree_root->fs_info);
-//		WARN((ret < 0), "ERROR: While destroying backup TxSv root\n");
+		ret = btrfs_acid_destroy_txsv(txsv_old_entry->root,
+				tree_root->fs_info);
+		WARN((ret < 0), "ERROR: While destroying backup TxSv root\n");
 
-
-		/* Finally, remove the backup TxSv item and its root. */
-//		WARN(1, "Not yet removing jack\n");
-
-#if 0
-		if (old_entry) {
-			if (new_entry) {
-				BTRFS_SUB_DBG(TX, "We must clean up the commit!\n");
-				ret = __cleanup_acid_commit_inconsistencies(txsv_old_entry->root,
-						old_entry->root, new_entry->root);
-				if (ret < 0) {
-					BTRFS_SUB_DBG(TX, "FALL BACK FROM new to old\n");
-					ret = __cleanup_acid_subvol_fallback(tree_root,
-							&txsv_old_entry->key, &old_entry->key,
-							&new_entry->key);
-					BUG_ON(ret < 0);
-				} else {
-					/* remove old_entry item;
-					 * remove txsv_old_entry;
-					 * remove txsv_old_entry root;
-					 */
-				}
-			}
-//			else {
-//				ret = __cleanup_acid_subvol_fallback(tree_root,
-//						&txsv_old_entry->key, &old_entry->key, NULL);
-//				BUG_ON(ret < 0);
-//			}
-		}
-//		else if (new_entry) {
-//			ret = __cleanup_acid_commit_validate(new_entry->root);
-//			BUG_ON(ret < 0);
-//			/* remove txsv_old_entry item;
-//			 * remove txsv_old_entry root.
-//			 */
-//		}
-#endif
 		WARN(1, "REASON: MEM LEAKING !!\n");
 		list_del(&txsv_old_entry->list);
 	}
-
-//	if (list_empty(&found_subvols)) {
-//		BTRFS_SUB_DBG(TX, "Total OKAY TxSv's = %d\n", total_old_subvols);
-//		BUG_ON(total_old_subvols > 1);
-//	}
-
-#if 0
-	if (sv)
-	{
-		txsv = __txsv_create(sv, &txsv_key, txsv_parent_ino,
-				txsv_name, txsv_name_len);
-		if (IS_ERR_OR_NULL(txsv))
-			goto out;
-
-		BTRFS_SUB_DBG(TX, "Last key found is a Transactional Subvolume.\n");
-		BTRFS_SUB_DBG(TX, "TXSV: root %p key [%llu %d %llu] gen %llu\n",
-				txsv->root, txsv->location.objectid, txsv->location.type,
-				txsv->location.offset, (unsigned long long) txsv->gen);
-		BTRFS_SUB_DBG(TX, "TXSV: parent ino: %llu name: %.*s\n",
-				txsv->parent_ino, txsv->path.len, txsv->path.name);
-
-	}
-	else
-		BTRFS_SUB_DBG(TX, "No Transactional Subvolume found.\n");
-#endif
 
 out:
 	return txsv;
@@ -2247,9 +2183,15 @@ void btrfs_acid_vm_open(struct vm_area_struct * area)
 			d->d_name.len, d->d_name.name);
 }
 
-int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
-		struct btrfs_fs_info * fs_info)
+static int __acid_root_destroy(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info, int remove_snap_item)
 {
+
+//}
+//
+//int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
+//		struct btrfs_fs_info * fs_info)
+//{
 	struct inode * parent_inode;
 	struct inode * snap_inode;
 //	struct dentry * parent_dentry;
@@ -2267,7 +2209,8 @@ int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
 
 //	if (!snap->root || !snap->location || !snap->src_location)
 	if (!snap->root || __is_null_key(&snap->location)
-			|| __is_null_key(&snap->src_location))
+//			|| __is_null_key(&snap->src_location))
+			|| (remove_snap_item && __is_null_key(&snap->src_location)))
 		return -EINVAL;
 
 	parent_location.objectid = snap->parent_ino;
@@ -2329,15 +2272,15 @@ int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
 		BUG_ON(ret);
 	}
 
-	/* remove the snapshot item from the tree root */
-	snap_item_key.objectid = snap->src_location.objectid;
-//	snap_item_key.objectid = snap->location.objectid;
-	snap_item_key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
-	snap_item_key.offset = snap->location.objectid;
-//	snap_item_key.offset = snap->src_location.objectid;
-	err = btrfs_delete_snapshot_item(trans, fs_info->tree_root, &snap_item_key);
-	BUG_ON(err);
-	btrfs_record_root_in_trans(trans, fs_info->tree_root);
+	if (remove_snap_item) {
+		/* remove the snapshot item from the tree root */
+		snap_item_key.objectid = snap->src_location.objectid;
+		snap_item_key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
+		snap_item_key.offset = snap->location.objectid;
+		err = btrfs_delete_snapshot_item(trans, fs_info->tree_root, &snap_item_key);
+		BUG_ON(err);
+		btrfs_record_root_in_trans(trans, fs_info->tree_root);
+	}
 
 //	ret = btrfs_end_transaction(trans, fs_info->fs_root);
 	ret = btrfs_commit_transaction(trans, fs_info->fs_root);
@@ -2365,6 +2308,19 @@ out_up_write:
 	}
 
 	return (err ? err : 0);
+}
+
+int btrfs_acid_destroy_txsv(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info)
+{
+	return __acid_root_destroy(snap, fs_info, 0);
+}
+
+
+int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info)
+{
+	return __acid_root_destroy(snap, fs_info, 1);
 }
 
 /* We have a pretty serious issue with this method, which we shall leave for

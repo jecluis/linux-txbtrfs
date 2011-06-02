@@ -170,6 +170,10 @@ int btrfs_acid_change_root(struct file * file,
 		struct btrfs_ioctl_acid_change_root_args * args);
 struct btrfs_acid_snapshot *
 btrfs_acid_create_snapshot(struct dentry * txsv_dentry);
+int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info);
+int btrfs_acid_destroy_txsv(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info);
 int btrfs_acid_create_snapshot_by_ioctl(struct file * file,
 		struct btrfs_ioctl_acid_create_snapshot_args * args);
 int btrfs_insert_snapshot_item(struct btrfs_trans_handle * trans,
