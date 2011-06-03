@@ -66,7 +66,8 @@ __snapshot_instantiate_dentry(struct dentry * dentry);
 static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 		struct qstr * path, struct inode * parent);
 static int __snapshot_remove_pid(struct btrfs_acid_ctl * ctl, pid_t pid);
-static int __snapshot_remove(struct btrfs_acid_ctl * ctl);
+//static int __snapshot_remove(struct btrfs_acid_ctl * ctl);
+static int __snapshot_remove(struct btrfs_acid_snapshot * snap);
 static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
 		struct qstr * path, pid_t pid);
 static void __snapshot_destroy_path(struct qstr * path);
@@ -2444,7 +2445,7 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	if (!snap_dentry || IS_ERR(snap_dentry))
 	{
 		BTRFS_SUB_DBG(FS, "Failed to instantiate dentry\n");
-		__snapshot_remove(ctl);
+		__snapshot_remove(snap);
 		goto err_compensate_trans;
 	}
 	__snapshot_set_perms(dir, snap_dentry);
@@ -3059,8 +3060,41 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 	return snap;
 }
 
-static int __snapshot_remove(struct btrfs_acid_ctl * ctl)
+//static int __snapshot_remove(struct btrfs_acid_ctl * ctl)
+static int __snapshot_remove(struct btrfs_acid_snasphot * snap)
 {
+	struct btrfs_acid_ctl * ctl;
+	struct btrfs_acid_snapshot_pid * entry, tmp;
+	pid_t pid;
+	int ret;
+
+	if (!snap || !snap->root)
+		return -EINVAL;
+
+	BTRFS_SUB_DBG(TX, "Removing snapshot [%llu %d %llu] from CTL\n",
+			snap->location.objectid, snap->location.type,
+			snap->location.offset);
+
+	ctl = &snap->root->fs_info->acid_ctl;
+
+	down_write(&snap->known_pids_sem);
+	if (list_empty(&snap->known_pids))
+		goto out;
+
+	list_for_each_entry_safe(entry, tmp, &snap->known_pids, list) {
+		pid = entry->pid;
+		ret = __snapshot_remove_pid(ctl, pid);
+		if (ret < 0) {
+			BTRFS_SUB_DBG(TX, "\tFailed removing parent pid %d\n", pid);
+			continue;
+		}
+		list_del(entry);
+		BTRFS_SUB_DBG(TX, "\tRemoved parent pid %d\n", pid);
+	}
+
+out:
+	up_write(&snap->known_pids);
+
 	return __snapshot_remove_pid(ctl, current->pid);
 }
 
