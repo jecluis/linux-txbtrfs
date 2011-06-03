@@ -66,11 +66,12 @@ __snapshot_instantiate_dentry(struct dentry * dentry);
 static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 		struct qstr * path, struct inode * parent);
 static int __snapshot_remove_pid(struct btrfs_acid_ctl * ctl, pid_t pid);
-//static int __snapshot_remove(struct btrfs_acid_ctl * ctl);
 static int __snapshot_remove(struct btrfs_acid_snapshot * snap);
 static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
 		struct qstr * path, pid_t pid);
 static void __snapshot_destroy_path(struct qstr * path);
+static int __txsv_set_root_flags(struct btrfs_trans_handle * trans,
+		struct btrfs_root * root);
 
 static int btrfs_has_acid_ancestor(struct btrfs_acid_ctl * ctl,
 		struct task_struct * task);
@@ -901,7 +902,14 @@ __cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
 				break;
 		}
 
-		BUG_ON(!old_entry && !new_entry);
+		/* We may not have either an old entry or a new entry, if there were
+		 * lingering on-disk backup TxSv items when the FS was unmounted.
+		 * In that case, what we must do is to simply remove the lingering
+		 * TxSv Item and go on with our lives.
+		 */
+		if (!old_entry && !new_entry)
+			goto okay;
+//		BUG_ON(!old_entry && !new_entry);
 
 		/* if we don't have the new entry, we must have the old one;
 		 * otherwise, we would have bugged out in the previous line.
@@ -1669,7 +1677,7 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 
 	struct inode * txsv_inode;
 	struct btrfs_root * parent_root;
-	struct btrfs_key txsv_location;
+	struct btrfs_key txsv_location, snap_item_key;
 	struct qstr * txsv_name;
 	u64 txsv_link_index, snap_link_index;
 	char * txsv_bak_name;
@@ -1677,6 +1685,8 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	int txsv_initial_gen;
 	int txsv_gen_len, i;
 	struct qstr txsv_bak_qstr;
+
+	struct dentry * snap_dentry;
 
 	if (!snap || !parent_inode || !snap_inode)
 		return -EINVAL;
@@ -1689,6 +1699,11 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 
 	parent_root = BTRFS_I(parent_inode)->root;
 	txsv_name = &txsv->path;
+
+	/* Brace for impact.
+	 * TODO: The following code is butt-ugly, and we *MUST* rewrite it
+	 * or just make it somehow pretty.
+	 */
 
 	/* It is viable to use __snapshot_create_path for this, although it should
 	 * suffer some tuning.
@@ -1725,6 +1740,8 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 		goto out_up_write_sv;
 	}
 
+	/* Insert consistency items, so we are able to obtain a consistent FS state
+	 * in case of system failure. */
 	trans = btrfs_start_transaction(fs_info->extent_root, 2);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
@@ -1743,6 +1760,7 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	ret = btrfs_commit_transaction(trans, fs_info->extent_root);
 	BUG_ON(ret);
 
+	/* Rename roots ( TxSv -> TxSv@gen ; Snap -> TxSv ) */
 	/* We're going with 20 items just to be safe. Further calculations
 	 * should be made. */
 	trans = btrfs_start_transaction(parent_root, 20);
@@ -1778,44 +1796,61 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	ret = btrfs_commit_transaction(trans, fs_info->tree_root);
 	BUG_ON(ret);
 
-#if 0
-	if (!snap || !parent_dentry || !parent_dir)
-		return -EINVAL;
+	/* Remove snapshot item and previous TxSv item */
+	trans = btrfs_start_transaction(fs_info->tree_root, 0);
+	BUG_ON(IS_ERR(trans));
 
-	fs_info = snap->root->fs_info;
-	ctl = &fs_info->acid_ctl;
+	snap_item_key.objectid = snap->src_location.objectid;
+	snap_item_key.type = BTRFS_ACID_SNAPSHOT_ITEM_KEY;
+	snap_item_key.offset = snap->location.objectid;
 
-	down_write(&ctl->sv_sem);
-	txsv = ctl->sv;
+	ret = btrfs_delete_snapshot_item(trans,
+			fs_info->tree_root, &snap_item_key);
+	BUG_ON(ret < 0);
 
+	txsv_location.objectid = txsv->location.objectid;
+	txsv_location.type = BTRFS_ACID_TX_SUBVOL_ITEM_KEY;
+	txsv_location.offset = 0;
 
-//#if 0
-	trans = btrfs_start_transaction(txsv->root, 20);
-	if (IS_ERR(trans))
-		return PTR_ERR(trans);
+	ret = btrfs_delete_tx_subvol_item(trans,
+			fs_info->tree_root, &txsv_location);
+	BUG_ON(ret < 0);
 
-	/* We may need the txsv's parent inode here. How should we get it? */
-	/* btrfs_set_trans_block_group() */
-	btrfs_set_trans_block_group(trans, parent_dir);
+	ret = __txsv_set_root_flags(trans, snap->root);
+	BUG_ON(ret < 0);
 
-	root_objectid = txsv->root->root_key.objectid;
+	ret = btrfs_end_transaction(trans, fs_info->tree_root);
+	BUG_ON(ret);
 
-	err = btrfs_unlink_subvol(trans, BTRFS_I(parent_dir)->root,
-			parent_dir, root_objectid,
-			txsv->path.name, txsv->path.len);
-	BUG_ON(err);
+	/* what should we do to the current TxSv snapshot struct instance? */
+	ctl->sv = snap;
+	ret = __snapshot_remove(snap);
+	if (ret < 0)
+		BTRFS_SUB_DBG(TX_COMMIT, "Removing snap after becoming TxSv\n");
 
-//	btrfs_add_link(trans, parent_dir,);
-//#endif
-	btrfs_invalidate_inodes(txsv->root);
+	/* Okay. This is another hack pending rewrite. We're tired of dealing with
+	 * this part of the commit and we just want to move on.
+	 *
+	 * __snapshot_remove() does not free the snapshot's name. Therefore,
+	 * we'll just free the name here and copy txsv_name to 'snaps' path.
+	 * After that, we will copy 'txsv_bak_qstr' to txsv's path.
+	 * And we're done.
+	 */
+	if (snap->path.name) /* this should always be true. */
+		kfree(snap->path.name);
+	memcpy(&snap->path, txsv_name, sizeof(snap->path));
+	memcpy(&txsv->path, &txsv_bak_qstr, sizeof(txsv->path));
 
-	up_write(&fs_info->acid_ctl.sv_sem);
-#endif
+	snap_inode->i_mode = txsv_inode->i_mode;
+//	snap_inode->i_mode |= S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
+	snap_inode->i_uid = txsv_inode->i_uid;
+	snap_inode->i_gid = txsv_inode->i_gid;
+	mark_inode_dirty(snap_inode);
 
-out_up_write_sv:
-	up_write(&ctl->sv_sem);
 out_put_txsv_inode:
 	iput(txsv_inode);
+out_up_write_sv:
+	up_write(&ctl->sv_sem);
 
 	return ret;
 }
@@ -2445,7 +2480,7 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	if (!snap_dentry || IS_ERR(snap_dentry))
 	{
 		BTRFS_SUB_DBG(FS, "Failed to instantiate dentry\n");
-		__snapshot_remove(snap);
+		__snapshot_destroy(snap);
 		goto err_compensate_trans;
 	}
 	__snapshot_set_perms(dir, snap_dentry);
@@ -2493,6 +2528,44 @@ int btrfs_acid_create_snapshot_by_ioctl(struct file * file,
 	ret = (btrfs_acid_create_snapshot(fdentry(src_file)) == NULL);
 
 	fput(src_file);
+	return ret;
+}
+
+static int __txsv_set_root_flags(struct btrfs_trans_handle * trans,
+		struct btrfs_root * root)
+{
+	int ret = 0;
+	u64 initial_flags, final_flags;
+
+	if (!trans || !root)
+		return -EINVAL;
+
+	BTRFS_SUB_DBG(TX, "Setting root %p [%llu %d %llu] TXSV flags\n",
+			root, root->root_key.objectid, root->root_key.type,
+			root->root_key.offset);
+	initial_flags = btrfs_root_flags(&root->root_item);
+	final_flags = initial_flags;
+
+	BTRFS_SUB_DBG(TX, "\tInitial flags: %llu\n", initial_flags);
+
+	if (initial_flags & BTRFS_ROOT_SUBVOL_ACID)
+		goto out; /* subvolume already flagged as transactional. */
+
+	final_flags |= BTRFS_ROOT_SUBVOL_ACID;
+
+	BTRFS_SUB_DBG(TX, "\tFinal flags: %llu\n", final_flags);
+
+	btrfs_set_root_flags(&root->root_item, final_flags);
+
+	ret = btrfs_update_root(trans, root->fs_info->tree_root,
+			&root->root_key, &root->root_item);
+
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX, "\tResetting Subvol flags\n");
+		btrfs_set_root_flags(&root->root_item, initial_flags);
+	}
+
+out:
 	return ret;
 }
 
@@ -2549,6 +2622,26 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	}
 
 	down_write(&sub_root->fs_info->subvol_sem);
+	trans = btrfs_start_transaction(sub_root->fs_info->extent_root, 2);
+	if (IS_ERR(trans)) {
+		ret = PTR_ERR(trans);
+		goto out_up_write;
+	}
+	btrfs_record_root_in_trans(trans, sub_root->fs_info->tree_root);
+
+	ret = __txsv_set_root_flags(trans, sub_root);
+	if (ret < 0)
+		goto out_up_write;
+
+	dentry_parent = dget_parent(dentry);
+	ret = btrfs_insert_tx_subvol_item(trans, sub_root->fs_info->tree_root,
+			&sub_root->root_key,
+			&dentry->d_name, dentry_parent->d_inode->i_ino, 0);
+
+
+	btrfs_commit_transaction(trans, sub_root);
+
+#if 0
 	initial_flags = btrfs_root_flags(&sub_root->root_item);
 	final_flags = initial_flags;
 
@@ -2567,8 +2660,7 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	 * we require 2 changes.
 	 */
 	trans = btrfs_start_transaction(sub_root->fs_info->extent_root, 2);
-	if (IS_ERR(trans))
-	{
+	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
 		goto out_reset_flags;
 	}
@@ -2583,6 +2675,7 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 			&dentry->d_name, dentry_parent->d_inode->i_ino, 0);
 
 	btrfs_commit_transaction(trans, sub_root);
+#endif
 
 	txsv = __txsv_create(sub_root, &sub_root->root_key,
 			dentry_parent->d_inode->i_ino,
@@ -2592,12 +2685,14 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	d_drop(dentry);
 	dput(dentry_parent);
 
+#if 0
 out_reset_flags:
 	if (ret)
 	{
 		BTRFS_SUB_DBG(TX, "Resetting Subvol flags\n");
 		btrfs_set_root_flags(&sub_root->root_item, initial_flags);
 	}
+#endif
 
 out_up_write:
 	up_write(&sub_root->fs_info->subvol_sem);
@@ -2687,16 +2782,14 @@ int btrfs_acid_init_cleanup(struct btrfs_fs_info * fs_info)
 		}
 
 		snap = __snapshot_read_leaf(leaf, si);
-		if (IS_ERR(snap))
-		{
+		if (IS_ERR(snap)) {
 			err = PTR_ERR(snap);
 			break;
 		}
 
 		snap_entry = kzalloc(sizeof(*snap_entry), GFP_NOFS);
-		if (!snap_entry)
-		{
-			// __snapshot_destroy(snap);
+		if (!snap_entry) {
+			 __snapshot_destroy(snap);
 			err = -ENOMEM;
 			break;
 		}
@@ -2876,6 +2969,12 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 	snap->path.hash = full_name_hash(snap->path.name, snap->path.len);
 	snap->hash = btrfs_name_hash(snap->path.name, snap->path.len);
 
+	/* Usually, we would not need this in the context this method is used, but
+	 * because __remove_snapshot() depends on the list being initialized, we
+	 * create the list. It may be ugly, but the alternative would be uglier.
+	 */
+	INIT_LIST_HEAD(&snap->known_pids);
+
 	return snap;
 
 err_free_path_name:
@@ -2888,25 +2987,6 @@ err_free_snap:
 	kfree(snap);
 err:
 	return ERR_PTR(err);
-}
-
-/* Destroys a struct btrfs_acid_snapshot previously created by
- * __snapshot_create(), freeing all the pointer members that are non-null,
- * and finishing by freeing the struct itself, setting the 'snap' pointer to
- * NULL.
- */
-static int __snapshot_destroy(struct btrfs_acid_snapshot * snap)
-{
-	if (!snap)
-		return -EINVAL;
-
-//	if (snap->location)	kfree(snap->location);
-//	if (snap->src_location) kfree(snap->src_location);
-	if (snap->path.name) kfree(snap->path.name);
-
-	kfree(snap);
-
-	return 0;
 }
 
 static int __snapshot_set_perms(struct inode * dir, struct dentry * dentry)
@@ -2924,7 +3004,8 @@ static int __snapshot_set_perms(struct inode * dir, struct dentry * dentry)
 	attrs.ia_uid = current_uid();
 	attrs.ia_gid = current_gid();
 
-	attrs.ia_mode = inode->i_mode | S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
+//	attrs.ia_mode = inode->i_mode | S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
+	attrs.ia_mode = inode->i_mode | S_IFDIR | S_IRWXU;
 	attrs.ia_valid = ATTR_MODE | ATTR_UID | ATTR_GID;
 
 	BTRFS_SUB_DBG(FS,
@@ -3060,16 +3141,32 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 	return snap;
 }
 
-//static int __snapshot_remove(struct btrfs_acid_ctl * ctl)
-static int __snapshot_remove(struct btrfs_acid_snasphot * snap)
+/**
+ * __snapshot_remove - Fully removes a snapshot from ACID Control Structs.
+ *
+ * In detail, removes a snapshot for all processes with it associated, from
+ * the 'current_snapshots' tree in the 'acid_ctl' struct in 'fs_info'.
+ *
+ * It does so by removing each snapshot in the 'known_pids' list from the
+ * tree, ending the process by removing the snapshot associated with the owner
+ * pid (which is not on the list, as far as we remember).
+ *
+ * Note: This method does not fully destroy a snapshot nor its memory print; we
+ * only remove the snapshot from Control Structs. There is a method for
+ * destroying a snapshot, and it is called __snapshot_destroy().
+ */
+static int __snapshot_remove(struct btrfs_acid_snapshot * snap)
 {
 	struct btrfs_acid_ctl * ctl;
-	struct btrfs_acid_snapshot_pid * entry, tmp;
+	struct btrfs_acid_snapshot_pid * entry, * tmp;
 	pid_t pid;
 	int ret;
 
-	if (!snap || !snap->root)
+	if (!snap)
 		return -EINVAL;
+	if (!snap->root)
+		return 0;
+
 
 	BTRFS_SUB_DBG(TX, "Removing snapshot [%llu %d %llu] from CTL\n",
 			snap->location.objectid, snap->location.type,
@@ -3088,41 +3185,78 @@ static int __snapshot_remove(struct btrfs_acid_snasphot * snap)
 			BTRFS_SUB_DBG(TX, "\tFailed removing parent pid %d\n", pid);
 			continue;
 		}
-		list_del(entry);
+		list_del(&entry->list);
 		BTRFS_SUB_DBG(TX, "\tRemoved parent pid %d\n", pid);
 	}
 
-out:
-	up_write(&snap->known_pids);
+	pid = snap->owner_pid;
+	snap->owner_pid = 0;
+	snap->root->snap = NULL;
 
-	return __snapshot_remove_pid(ctl, current->pid);
+out:
+	up_write(&snap->known_pids_sem);
+
+	return __snapshot_remove_pid(ctl, pid);
 }
 
+/**
+ * __snapshot_remove_pid - Removes the snapshot associated with @pid from
+ * the 'current_snapshots' tree in @ctl.
+ */
 static int __snapshot_remove_pid(struct btrfs_acid_ctl * ctl, pid_t pid)
 {
 	struct btrfs_acid_snapshot * snap;
 	if (!ctl)
 		return -EINVAL;
 
-	BTRFS_SUB_DBG(FS,
-			"Deleting Snapshot for PID = %d\n", pid);
+	BTRFS_SUB_DBG(TX, "Removing Snapshot for PID = %d\n", pid);
 
 	down_write(&ctl->curr_snaps_sem);
 	snap = radix_tree_delete(&ctl->current_snapshots, pid);
 	up_write(&ctl->curr_snaps_sem);
 
-	BTRFS_SUB_DBG(FS,
-			"Snapshot %p removed from the tree\n", snap);
 
 	if (!snap)
-		return 0; // it does not exist, which is good from our POV.
+		BTRFS_SUB_DBG(TX, "\tDoes not exist\n");
+	else
+		BTRFS_SUB_DBG(TX, "\tRemoved snapshot %p\n", snap);
+
+	return 0;
+}
+
+/** __snapshot_destroy - Completely destroys an in-memory snapshot.
+ *
+ * Will erase all in-memory presence of a snapshot, using __snapshot_remove()
+ * for the Control Structures (acid CTL) part of the task. Also, we'll use
+ * as many helper methods as required to free all fields in the snapshot
+ * struct, freeing its memory in the end.
+ *
+ * Note: Do not use this method with ACID subvolumes, or fire shall rain upon
+ * thee. There is a method for that: __txsv_destroy(). Use it.
+ */
+static int __snapshot_destroy(struct btrfs_acid_snapshot * snap)
+{
+	int ret;
+
+	if (!snap)
+		return -EINVAL;
+
+	BTRFS_SUB_DBG(TX, "Destroying snapshot [%llu %d %llu]\n",
+			snap->location.objectid, snap->location.type,
+			snap->location.offset);
+
+	ret = __snapshot_remove(snap);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX, "\tERROR: while destroying snap\n");
+		goto out;
+	}
 
 	if (snap->path.name)
 		kfree(snap->path.name);
-
 	kfree(snap);
 
-	return 0;
+out:
+	return ret;
 }
 
 static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
