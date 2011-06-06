@@ -1636,12 +1636,12 @@ int btrfs_acid_tx_commit(struct file * file)
 	__commit_print_sets(snap);
 
 //#if 0
-	if (ret >= 0) {
+//	if (ret >= 0) {
 //		ret = btrfs_acid_commit_snapshot(snap, parent_dentry, parent_inode);
-		ret = btrfs_acid_commit_snapshot(snap, parent_inode, sv_dentry->d_inode);
-		if (ret < 0)
-			BTRFS_SUB_DBG(TX_COMMIT, "Error committing snapshot\n");
-	}
+	ret = btrfs_acid_commit_snapshot(snap, parent_inode, sv_dentry->d_inode);
+	if (ret < 0)
+		BTRFS_SUB_DBG(TX_COMMIT, "Error committing snapshot\n");
+//	}
 //#endif
 
 #if 0
@@ -1840,6 +1840,8 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 		kfree(snap->path.name);
 	memcpy(&snap->path, txsv_name, sizeof(snap->path));
 	memcpy(&txsv->path, &txsv_bak_qstr, sizeof(txsv->path));
+
+
 
 	snap_inode->i_mode = txsv_inode->i_mode;
 //	snap_inode->i_mode |= S_IFDIR | S_IRWXU | S_IRWXG | S_IRWXO;
@@ -3189,11 +3191,11 @@ static int __snapshot_remove(struct btrfs_acid_snapshot * snap)
 		BTRFS_SUB_DBG(TX, "\tRemoved parent pid %d\n", pid);
 	}
 
+out:
 	pid = snap->owner_pid;
 	snap->owner_pid = 0;
 	snap->root->snap = NULL;
 
-out:
 	up_write(&snap->known_pids_sem);
 
 	return __snapshot_remove_pid(ctl, pid);
