@@ -26,6 +26,7 @@
 #include <linux/namei.h>
 #include <linux/fsnotify.h>
 #include <linux/list.h>
+#include <linux/time.h>
 #include "ctree.h"
 #include "btrfs_inode.h"
 #include "transaction.h"
@@ -1218,6 +1219,7 @@ int btrfs_acid_allow(struct inode * inode)
  *
  * This method may return the very same pid in 'found_pid' as the current's.
  */
+#if 0
 struct btrfs_acid_snapshot *
 btrfs_acid_find_valid_ancestor(struct btrfs_acid_ctl * ctl,
 		struct task_struct * task, pid_t * found_pid)
@@ -1247,6 +1249,58 @@ out:
 
 	return snap;
 }
+#endif
+
+/**
+ * btrfs_acid_find_valid_ancestor - Determines whether a task is within the
+ * context of a transaction, either its own or of an ancestor's.
+ */
+struct btrfs_acid_snapshot *
+btrfs_acid_find_valid_ancestor(struct btrfs_acid_ctl * ctl,
+		struct task_struct * task, pid_t * found_pid)
+{
+	struct btrfs_acid_snapshot * snap = NULL;
+	struct task_struct * tmp, * last_tmp = NULL;
+	pid_t found = 0;
+
+	if (!ctl || !task)
+		goto out;
+
+	BTRFS_SUB_DBG(TX, "current task pid = %d\n", task->pid);
+
+	down_read(&ctl->curr_snaps_sem);
+	tmp = task;
+	while (tmp && !is_global_init(tmp)) {
+		BTRFS_SUB_DBG(TX, "\ttask pid = %d\n", tmp->pid);
+		snap = radix_tree_lookup(&ctl->current_snapshots, tmp->pid);
+		if (snap) {
+			found = tmp->pid;
+			break;
+		}
+		last_tmp = tmp;
+		tmp = tmp->parent;
+	}
+	up_read(&ctl->curr_snaps_sem);
+
+	if (!snap)
+		goto out;
+
+	if (found == task->pid)
+		goto out;
+
+	/* if (last_tmp->start_time < snap->start_time) */
+	if (timespec_compare(&last_tmp->start_time, &snap->start_time) < 0) {
+		/* if so, we're out of this transaction */
+		snap = NULL;
+		goto out;
+	}
+
+out:
+	if (found_pid)
+		*found_pid = (snap ? found : 0);
+
+	return snap;
+}
 
 static int btrfs_has_acid_ancestor(struct btrfs_acid_ctl * ctl,
 		struct task_struct * task)
@@ -1273,7 +1327,7 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	if (!ctl)
 		return ERR_PTR(-EINVAL);
 
-	BTRFS_SUB_DBG(TX, "checking PID = %d\n", current->pid);
+	BTRFS_SUB_DBG(TX, "Checking PID = %d\n", current->pid);
 
 	/*down_read(&ctl->curr_snaps_sem);
 	task = get_current();
@@ -1288,15 +1342,18 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	}
 	up_read(&ctl->curr_snaps_sem);*/
 	snap = btrfs_acid_find_valid_ancestor(ctl, get_current(), &found_pid);
-	BTRFS_SUB_DBG(TX, "snap = %p\n", snap);
+	BTRFS_SUB_DBG(TX, "\tsnap = %p, found_pid = %d\n", snap, found_pid);
 
 	if (!snap)
 		return NULL;
 
+	BTRFS_SUB_DBG(TX, "\tAcquiring semaphores for PID = %d\n",
+			get_current()->pid);
 	down_write(&ctl->curr_snaps_sem);
 	down_write(&snap->known_pids_sem);
 	task = get_current();
-	while (is_global_init(task) || (task->pid != found_pid)) {
+	while (!is_global_init(task) && (task->pid != found_pid)) {
+		BTRFS_SUB_DBG(TX, "\tInserting snapshot for PID = %d\n", task->pid);
 		radix_tree_insert(&ctl->current_snapshots, task->pid, (void *) snap);
 
 		pid_entry = kzalloc(sizeof(*pid_entry), GFP_NOFS);
@@ -1308,6 +1365,8 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	}
 	up_write(&snap->known_pids_sem);
 	up_write(&ctl->curr_snaps_sem);
+	BTRFS_SUB_DBG(TX, "\tReleasing semaphores for PID = %d\n",
+			get_current()->pid);
 
 	return snap;
 }
@@ -1380,24 +1439,20 @@ int btrfs_acid_d_revalidate(struct dentry * dentry, struct nameidata * nd)
 	struct btrfs_root * root;
 	struct btrfs_acid_ctl * ctl;
 
-//	BTRFS_TX_DBG("REVALIDATE", "Here we are.\n");
 	if (!dentry)
 		goto out;
-//	BTRFS_TX_DBG("REVALIDATE", "Here we are #2.\n");
 
 	if (!dentry->d_inode)
 	{
 		BTRFS_SUB_DBG(FS, "dentry->d_inode == NULL\n");
 		goto out;
 	}
-//	BTRFS_TX_DBG("REVALIDATE", "Here we are. #3\n");
 
 	if (!BTRFS_I(dentry->d_inode)->root)
 	{
 		BTRFS_SUB_DBG(FS, "dentry->d_inode->root == NULL\n");
 		goto out;
 	}
-//	BTRFS_TX_DBG("REVALIDATE", "Here we are. #4\n");
 
 	root = BTRFS_I(dentry->d_inode)->root;
 
@@ -1406,7 +1461,6 @@ int btrfs_acid_d_revalidate(struct dentry * dentry, struct nameidata * nd)
 		BTRFS_SUB_DBG(FS, "root->fs_info == NULL\n");
 		goto out;
 	}
-//	BTRFS_TX_DBG("REVALIDATE", "Here we are. #5\n");
 
 	ctl = &root->fs_info->acid_ctl;
 
@@ -1489,6 +1543,8 @@ int btrfs_acid_tx_start(struct file * file)
 		goto out_err;
 	}
 
+	/* Set the snapshot's creation time */
+	ktime_get_ts(&snap->start_time);
 
 	/* The snapshot is created, added to the tree, everything is either
 	 * fine or not. Anyway, we have nothing else to do, so we return. */
@@ -1587,6 +1643,9 @@ int btrfs_acid_tx_commit(struct file * file)
 
 	struct dentry * parent_dentry;
 	struct inode * parent_inode;
+
+	BTRFS_SUB_DBG(TX_COMMIT, "Attempting Commit on %s for PID = %d\n",
+			file->f_path.dentry, get_current()->pid);
 
 	if (!file) {
 		BTRFS_SUB_DBG(TX_COMMIT, "file == NULL\n");
@@ -2263,8 +2322,8 @@ static int __acid_root_destroy(struct btrfs_acid_snapshot * snap,
 			snap_inode_location.objectid, snap_inode_location.type,
 			snap_inode_location.offset);
 	BTRFS_SUB_DBG(FS, "location [%llu %d %llu]\n",
-			snap->location->objectid, snap->location->type,
-			snap->location->offset);
+			snap->location.objectid, snap->location.type,
+			snap->location.offset);
 	BTRFS_SUB_DBG(FS, "snap inode = %llu\n", snap_inode->i_ino);
 
 	if (snap_inode->i_ino != BTRFS_FIRST_FREE_OBJECTID)

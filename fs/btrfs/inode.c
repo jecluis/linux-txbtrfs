@@ -4205,32 +4205,11 @@ struct dentry *btrfs_lookup(struct inode *dir, struct dentry *dentry,
 	struct inode *inode;
 	struct dentry * tmp_dentry;
 
-	BTRFS_SUB_DBG(FS, "dentry: %.*s\n",
-			dentry->d_name.len, dentry->d_name.name);
-
 	inode = btrfs_lookup_dentry(dir, dentry);
 	if (IS_ERR(inode))
 		return ERR_CAST(inode);
 
-//	if (inode)
-//	{
-//		root = BTRFS_I(inode)->root;
-//		if (root->owner_pid > 0)
-//			if (root->owner_pid != current->pid)
-//				inode = NULL;
-//	}
-
-	tmp_dentry = d_splice_alias(inode, dentry);
-	if (!tmp_dentry)
-		BTRFS_SUB_DBG(FS, "dentry splice alias returned NULL\n");
-	else
-		BTRFS_SUB_DBG(FS, "dentry spliced alias: name = %.*s, inode = %p\n",
-			tmp_dentry->d_name.len, tmp_dentry->d_name.name,
-			tmp_dentry->d_inode);
-	BTRFS_SUB_DBG(FS, "dentry name = %.*s, inode = %p\n",
-			dentry->d_name.len, dentry->d_name.name, dentry->d_inode);
-
-	return tmp_dentry;
+	return d_splice_alias(inode, dentry);;
 }
 
 static unsigned char btrfs_filetype_table[] = {

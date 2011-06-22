@@ -21,6 +21,7 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/dcache.h>
+#include <linux/time.h>
 #include "ioctl.h"
 #include "txbtrfs-ctl.h"
 #include "ctree.h"
@@ -50,6 +51,7 @@ struct btrfs_acid_snapshot
 	unsigned long long hash;
 	u64 gen;
 	pid_t owner_pid;
+	struct timespec start_time;
 
 	atomic_t usage_count;
 

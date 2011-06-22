@@ -38,12 +38,12 @@ struct btrfs_acid_ctl
 
 
 /* Debug macros */
-//#define __TXBTRFS_DEBUG__
+#define __TXBTRFS_DEBUG__
 
 #ifdef __TXBTRFS_DEBUG__
 #define __TXBTRFS_DEBUG_TX__
 #define __TXBTRFS_DEBUG_CALL__
-//#define __TXBTRFS_DEBUG_FS__
+#define __TXBTRFS_DEBUG_FS__
 #define __TXBTRFS_DEBUG_LOG__
 #define __TXBTRFS_DEBUG_ACCESS__
 #define __TXBTRFS_DEBUG_TX_COMMIT__
