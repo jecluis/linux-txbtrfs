@@ -64,7 +64,8 @@ static struct btrfs_acid_log_rw *
 __log_create_rw(pgoff_t first, pgoff_t last);
 static struct btrfs_acid_log_entry *
 __log_create_entry(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location, size_t size, void * data, u32 type);
+		struct btrfs_key * location,
+		size_t size, void * data, u32 type);
 
 /* destruction methods */
 static void
@@ -764,8 +765,8 @@ __log_create_mmap(struct btrfs_key * location, struct qstr * name,
 		return ERR_PTR(err);
 	}
 
-	entry->first_page = start;
-	entry->last_page = end;
+	entry->pages.first_page = start;
+	entry->pages.last_page = end;
 	entry->prot = prot;
 	entry->flags = flags;
 
@@ -1257,7 +1258,8 @@ __log_create_rw(pgoff_t first, pgoff_t last)
 
 static struct btrfs_acid_log_entry *
 __log_create_entry(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location, size_t size, void * data, u32 type)
+		struct btrfs_key * location,
+		size_t size, void * data, u32 type)
 {
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_acid_log_entry * entry;

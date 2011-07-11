@@ -48,6 +48,8 @@ struct btrfs_acid_ctl
 #define __TXBTRFS_DEBUG_ACCESS__
 #define __TXBTRFS_DEBUG_TX_COMMIT__
 #define __TXBTRFS_DEBUG_TX_START__
+#define __TXBTRFS_DEBUG_TX_VALIDATE__
+#define __TXBTRFS_DEBUG_TX_RECONCILIATE__
 #endif /* __TXBTRFS_DEBUG__ */
 
 #ifdef __TXBTRFS_DEBUG_TX__
@@ -116,6 +118,22 @@ struct btrfs_acid_ctl
 #define BTRFS_TX_START_DBG(prefix, fmt, args...) do {} while (0)
 #endif /* __TXBTRFS_DEBUG_TX_START__ */
 
+#ifdef __TXBTRFS_DEBUG_TX_VALIDATE__
+#define BTRFS_TX_VALIDATE_DBG(prefix, fmt, args...) \
+	printk(KERN_DEBUG "<TX-VALIDATE> (%s): " fmt, prefix, ## args)
+#else
+#define BTRFS_TX_VALIDATE_DBG(prefix, fmt, args...) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_TX_VALIDATE__ */
+
+#ifdef __TXBTRFS_DEBUG_TX_RECONCILIATE__
+#define BTRFS_TX_RECONCILIATE_DBG(prefix, fmt, args...) \
+	printk(KERN_DEBUG "<TX-RECONCILIATE> (%s): " fmt, prefix, ## args)
+#else
+#define BTRFS_TX_RECONCILIATE_DBG(prefix, fmt, args...) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_TX_RECONCILIATE__ */
+
+
+
 #ifdef __TXBTRFS_DEBUG__
 #define BTRFS_SUB_DBG(sub, fmt, args...) \
 	BTRFS_##sub##_DBG(__FUNCTION__, fmt, ## args)
@@ -126,6 +144,7 @@ struct btrfs_acid_ctl
 
 
 int btrfs_acid_init(struct btrfs_fs_info * fs_info);
+int btrfs_acid_exit(struct btrfs_fs_info * fs_info);
 
 
 extern const struct inode_operations btrfs_acid_dir_inode_operations;

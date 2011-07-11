@@ -143,6 +143,8 @@ static void btrfs_put_super(struct super_block *sb)
 	struct btrfs_root *root = btrfs_sb(sb);
 	int ret;
 
+	/* txbtrfs --jel */
+	btrfs_acid_exit(root->fs_info);
 	ret = close_ctree(root);
 	sb->s_fs_info = NULL;
 

@@ -27,6 +27,7 @@
 #include <linux/fsnotify.h>
 #include <linux/list.h>
 #include <linux/time.h>
+#include <linux/swap.h>
 #include "ctree.h"
 #include "btrfs_inode.h"
 #include "transaction.h"
@@ -77,6 +78,18 @@ static int __txsv_set_root_flags(struct btrfs_trans_handle * trans,
 static int btrfs_has_acid_ancestor(struct btrfs_acid_ctl * ctl,
 		struct task_struct * task);
 
+static int __transaction_validate(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info);
+static int __transaction_validate_rw(struct btrfs_acid_snapshot * snap,
+		struct btrfs_acid_snapshot * txsv);
+static int __transaction_validate_rw_overlap(
+		struct btrfs_acid_log_rw * a, struct btrfs_acid_log_rw * b);
+
+static int __transaction_reconciliate(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info);
+static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
+		struct btrfs_acid_snapshot * txsv);
+static struct page * __get_page(struct inode * inode, pgoff_t index);
 
 /* Copy the contents of 'src' and return them in newly allocated memory.
  *
@@ -286,6 +299,9 @@ static struct btrfs_acid_snapshot * __txsv_create(struct btrfs_root * sv,
 	snap->hash = btrfs_name_hash(name, name_len);
 
 	memcpy((void *) snap->path.name, (void *) name, name_len);
+
+	INIT_LIST_HEAD(&snap->write_log);
+	INIT_LIST_HEAD(&snap->read_log); // XXX: this should not be necessary.
 
 	return snap;
 }
@@ -1278,7 +1294,9 @@ btrfs_acid_find_valid_ancestor(struct btrfs_acid_ctl * ctl,
 			break;
 		}
 		last_tmp = tmp;
+		rcu_read_lock();
 		tmp = tmp->parent;
+		rcu_read_unlock();
 	}
 	up_read(&ctl->curr_snaps_sem);
 
@@ -1361,7 +1379,9 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 		pid_entry->pid = task->pid;
 		list_add(&pid_entry->list, &snap->known_pids);
 
+		rcu_read_lock();
 		task = task->parent;
+		rcu_read_unlock();
 	}
 	up_write(&snap->known_pids_sem);
 	up_write(&ctl->curr_snaps_sem);
@@ -1627,6 +1647,339 @@ static void __commit_print_sets(struct btrfs_acid_snapshot * snap)
 			mem_footprint);
 }
 
+/** __transaction_validate - Validates a transaction.
+ *
+ * This procedure is divided in three major phases: read/write validation,
+ * inode-dependent validation and directory-dependent validation.
+ */
+static int __transaction_validate(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info)
+{
+	int ret = 0;
+	struct btrfs_acid_ctl * ctl;
+	struct btrfs_acid_snapshot * txsv;
+
+	if (!snap || !fs_info)
+		return -EINVAL;
+
+	ctl = &fs_info->acid_ctl;
+	if (!ctl)
+		return -ENOTSUPP;
+
+	down_read(&ctl->sv_sem);
+	txsv = ctl->sv;
+	up_read(&ctl->sv_sem);
+
+	BTRFS_SUB_DBG(TX_VALIDATE, "Validating transaction pid = %d\n",
+			get_current()->pid);
+
+	if (!txsv) {
+		BTRFS_SUB_DBG(TX_VALIDATE, "\t!! TxSv == NULL\n");
+		return -EINVAL;
+	}
+
+	/* If TxSv's generation is still the same we started from, then allow the
+	 * commit to proceed.
+	 */
+	if (txsv->gen == snap->gen) {
+		BTRFS_SUB_DBG(TX_VALIDATE, "\tpid = %d, TxSv gen == snap gen == %d\n",
+				get_current()->pid, snap->gen);
+		return 0;
+	}
+
+	ret = __transaction_validate_rw(snap, txsv);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_VALIDATE, "\tpid = %d, R/W validation failed\n",
+				get_current()->pid);
+		goto out;
+	}
+
+
+out:
+	return ret;
+}
+
+static int __transaction_validate_rw_overlap(
+		struct btrfs_acid_log_rw * a, struct btrfs_acid_log_rw * b)
+{
+	struct btrfs_acid_log_rw * first, * last;
+
+	if (a->first_page < b->first_page) {
+		first = a;
+		last = b;
+	} else {
+		first = b;
+		last = a;
+	}
+
+	return ((last->first_page >= first->first_page)
+			&& (last->first_page <= first->last_page));
+}
+
+static int __transaction_validate_rw(struct btrfs_acid_snapshot * snap,
+		struct btrfs_acid_snapshot * txsv)
+{
+	struct btrfs_acid_log_entry * txsv_entry, * snap_entry;
+	struct btrfs_acid_log_rw * txsv_rw, * snap_rw;
+
+	if (!snap || !txsv)
+		return -EINVAL;
+
+	/* if txsv's write log is empty, then we have nothing to validate. */
+	if (list_empty(&txsv->write_log))
+		return 0;
+
+	list_for_each_entry(snap_entry, &snap->read_log, list) {
+		switch (snap_entry->type) {
+		case BTRFS_ACID_LOG_READ:
+			snap_rw = (struct btrfs_acid_log_rw *) snap_entry->data;
+			break;
+		case BTRFS_ACID_LOG_MMAP:
+			snap_rw = &((struct btrfs_acid_log_mmap *) snap_entry->data)->pages;
+			break;
+		default:
+			continue;
+		}
+
+		list_for_each_entry(txsv_entry, &txsv->write_log, list) {
+			if (txsv_entry->type != BTRFS_ACID_LOG_WRITE)
+				continue;
+			if (snap_entry->location.objectid != txsv_entry->location.objectid)
+				continue;
+			txsv_rw = (struct btrfs_acid_log_rw *) txsv_entry->data;
+
+			if (__transaction_validate_rw_overlap(txsv_rw, snap_rw))
+				return -EPERM;
+		}
+	}
+
+	return 0;
+}
+
+static int __transaction_reconciliate(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info)
+{
+	int ret = 0;
+	struct btrfs_acid_ctl * ctl;
+	struct btrfs_acid_snapshot * txsv;
+
+	if (!snap || !fs_info)
+		return -EINVAL;
+
+	ctl = &fs_info->acid_ctl;
+	if (!ctl)
+		return -ENOTSUPP;
+
+	down_read(&ctl->sv_sem);
+	txsv = ctl->sv;
+	up_read(&ctl->sv_sem);
+
+	if (!txsv) {
+		BTRFS_SUB_DBG(TX_RECONCILIATE, "!! NULL TxSv !! (PID = %d)\n",
+				get_current()->pid);
+		return -EINVAL;
+	}
+
+	ret = __transaction_reconciliate_rw(snap, txsv);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_RECONCILIATE, "Error on On R/W ops (PID = %d)\n",
+				get_current()->pid);
+		goto out;
+	}
+
+out:
+	return ret;
+}
+
+#if 0
+static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
+		struct btrfs_acid_snapshot * txsv)
+{
+	int ret = 0;
+
+	return ret;
+}
+
+#else
+static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
+		struct btrfs_acid_snapshot * txsv)
+{
+	int ret = 0;
+	struct btrfs_acid_log_entry * txsv_entry, * snap_entry;
+	struct btrfs_acid_log_rw * txsv_rw, * snap_rw;
+//	struct list_head * txsv_head;
+	struct inode * txsv_inode, * snap_inode;
+	struct super_block * sb = snap->root->fs_info->sb;
+	struct page * snap_page, * txsv_page;
+	int is_written;
+	pgoff_t index;
+	void * txsv_addr, * snap_addr;
+
+	u64 start_pos, num_bytes, end_of_last_block;
+	u32 sectorsize = snap->root->sectorsize;
+
+	BTRFS_SUB_DBG(TX_RECONCILIATE, "Reconciliating snap %.*s with TxSv.\n",
+			snap->path.len, snap->path.name);
+
+	if (list_empty(&txsv->write_log))
+			return 0;
+
+//	txsv_head = &txsv->write_log;
+//	BTRFS_SUB_DBG(TX_RECONCILIATE, "\tTxSv Write Head = %p\n", txsv_head);
+//	BTRFS_SUB_DBG(TX_RECONCILIATE, "\tTxSv Write Log is %s NULL\n",
+//			(txsv_head ? "not" : ""));
+//
+//	list_for_each_entry(txsv_entry, txsv_head, list) {
+//		BTRFS_SUB_DBG(TX_RECONCILIATE, "\tDID IT\n");
+
+//	for (txsv_entry = ({
+//		const typeof( ((typeof(*txsv_entry) *)0)->list ) *__mptr = ((&txsv->write_log)->next);
+//		(typeof(*txsv_entry) *)( (char *)__mptr - ((size_t) &((typeof(*txsv_entry) *)0)->list) );});
+//		     __builtin_prefetch(txsv_entry->list.next),
+//		    		 &txsv_entry->list != (&txsv->write_log);
+//		     txsv_entry = ({
+//		const typeof( ((typeof(*txsv_entry) *)0)->list ) *__mptr = (txsv_entry->list.next);
+//		(typeof(*txsv_entry) *)( (char *)__mptr - ((size_t) &((typeof(*txsv_entry) *)0)->list) );})) {
+
+	list_for_each_entry(txsv_entry, &txsv->write_log, list) {
+		if (txsv_entry->type != BTRFS_ACID_LOG_WRITE)
+			continue;
+
+		is_written = 0;
+		if (list_empty(&snap->write_log))
+			goto just_do_it;
+
+		list_for_each_entry(snap_entry, &snap->write_log, list) {
+			if (snap_entry->type != BTRFS_ACID_LOG_WRITE)
+				continue;
+
+			if (!memcmp(&snap_entry->location, &txsv_entry->location,
+					sizeof(snap_entry->location))) {
+				is_written = 1;
+				break;
+			}
+		}
+
+just_do_it:
+		if (!is_written)
+			continue;
+
+		txsv_rw = (struct btrfs_acid_log_rw *) txsv_entry->data;
+
+		txsv_inode = btrfs_iget(sb, &txsv_entry->location, txsv->root, NULL);
+		if (!txsv_inode) {
+			BTRFS_SUB_DBG(TX_RECONCILIATE,
+					"\tinode [%llu %d %llu]Êdoes not exist in TxSv !!\n",
+					txsv_entry->location.objectid, txsv_entry->location.type,
+					txsv_entry->location.offset);
+			continue;
+		}
+		snap_inode = btrfs_iget(sb, &txsv_entry->location, snap->root, NULL);
+		if (!snap_inode) {
+			BTRFS_SUB_DBG(TX_RECONCILIATE,
+					"\tinode [%llu %d %llu]Êdoes not exist in Snapshot !!\n",
+					txsv_entry->location.objectid, txsv_entry->location.type,
+					txsv_entry->location.offset);
+			goto inode_put_txsv;
+		}
+
+		/* NOTE: the following code should be all moved to a single method */
+		for (index = txsv_rw->first_page;
+				index <= txsv_rw->last_page; index ++) {
+			txsv_page = __get_page(txsv_inode, index);
+			if (!txsv_page) {
+				BTRFS_SUB_DBG(TX_RECONCILIATE,
+						"\tInvalid txsv page index (%lu) or something\n", index);
+				break;
+			}
+
+			snap_page = __get_page(snap_inode, index);
+			if (!snap_page) {
+				BTRFS_SUB_DBG(TX_RECONCILIATE,
+						"\tInvalid snap page index (%lu) or something\n", index);
+				unlock_page(txsv_page);
+				page_cache_release(txsv_page);
+				break;
+			}
+
+			ret = btrfs_delalloc_reserve_space(snap_inode, PAGE_CACHE_SIZE);
+			if (ret) {
+				unlock_page(snap_page);
+				page_cache_release(snap_page);
+				break;
+			}
+
+			txsv_addr = kmap(txsv_page);
+			snap_addr = kmap(snap_page);
+			memcpy(snap_addr, txsv_addr, PAGE_CACHE_SIZE);
+			kunmap(txsv_page);
+			unlock_page(txsv_page); /* this should be in a '__put_page()' */
+			page_cache_release(txsv_page);
+
+			start_pos = ((index << PAGE_CACHE_SHIFT) & ~(sectorsize - 1));
+			num_bytes = PAGE_CACHE_SIZE;
+			end_of_last_block = (start_pos + num_bytes - 1);
+			ret = btrfs_set_extent_delalloc(snap_inode, start_pos,
+					end_of_last_block, NULL);
+			BUG_ON(ret);
+
+			SetPageUptodate(snap_page);
+			ClearPageChecked(snap_page);
+			set_page_dirty(snap_page);
+
+			unlock_page(snap_page);
+			mark_page_accessed(snap_page);
+			page_cache_release(snap_page);
+
+			balance_dirty_pages_ratelimited_nr(snap_inode->i_mapping, 1);
+			btrfs_throttle(snap->root);
+			BTRFS_I(snap_inode)->last_trans = snap->root->fs_info->generation + 1;
+			btrfs_wait_ordered_range(snap_inode, start_pos, PAGE_CACHE_SIZE);
+
+
+#if 0
+
+			set_page_dirty(snap_page);
+			ret = write_one_page(snap_page, 0);
+			if (ret < 0) {
+				BTRFS_SUB_DBG(TX_RECONCILIATE, "\tError on Write One Page\n");
+			}
+			kunmap(snap_page);
+//			unlock_page(snap_page);
+			page_cache_release(snap_page);
+#endif
+		}
+
+inode_put_snap:
+		iput(snap_inode);
+inode_put_txsv:
+		iput(txsv_inode);
+	}
+
+	return ret;
+}
+#endif
+
+static struct page * __get_page(struct inode * inode, pgoff_t index)
+{
+	struct page * page = NULL;
+	page = grab_cache_page(inode->i_mapping, index);
+	if (!page)
+		return NULL;
+
+	if (!PageUptodate(page)) {
+		btrfs_readpage(NULL, page);
+		lock_page(page);
+		if (!PageUptodate(page)) {
+			unlock_page(page);
+			page_cache_release(page);
+			return NULL;
+		}
+	}
+	wait_on_page_writeback(page);
+	return page;
+}
+
 /**
  * btrfs_acid_tx_commit - Commits a transaction to the master branch.
  *
@@ -1689,19 +2042,41 @@ int btrfs_acid_tx_commit(struct file * file)
 	if (!atomic_dec_and_test(&snap->usage_count))
 		goto out;
 
+	__commit_print_sets(snap);
+
+	/* At this point we must validate the transaction against the TxSv.
+	 * If validation succeeds, we may then finalize the commit (i.e., changing
+	 * roots); otherwise, the current transaction should abort.
+	 */
+	ret = __transaction_validate(snap, fs_info);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_COMMIT, "Error validating transaction (PID = %d)\n",
+				get_current()->pid);
+		goto out;
+	}
+
+	BTRFS_SUB_DBG(TX_COMMIT, "Reconciliating transaction PID = %d\n",
+			get_current()->pid);
+	ret = __transaction_reconciliate(snap, fs_info);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_COMMIT,
+				"Error reconciliating transaction (PID = %d)\n",
+				get_current()->pid);
+		goto out;
+	}
+
 	BTRFS_SUB_DBG(TX_COMMIT, "Committing transaction PID = %d\n",
 			get_current()->pid);
 
-	__commit_print_sets(snap);
-
-//#if 0
-//	if (ret >= 0) {
-//		ret = btrfs_acid_commit_snapshot(snap, parent_dentry, parent_inode);
+	/* XXX: Commit precautions. Read more:
+	 * We must ensure the transaction committing validated against the right
+	 * transactional subvolume. Once validation is achieved successfully, we
+	 * must guarantee its chances of needing to revalidate are slim or
+	 * inexistent at all.
+	 */
 	ret = btrfs_acid_commit_snapshot(snap, parent_inode, sv_dentry->d_inode);
 	if (ret < 0)
 		BTRFS_SUB_DBG(TX_COMMIT, "Error committing snapshot\n");
-//	}
-//#endif
 
 #if 0
 	if (ret >= 0) {
@@ -2530,6 +2905,13 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 			pending->snap->root_key.type,
 			pending->snap->root_key.offset);
 
+	/* The snapshot's key offset is equal to the generation of the subvolume
+	 * from where the snapshot was taken, when the snapshot was created.
+	 * Therefore, we take it as the snapshot's initial generation for
+	 * validation purposes.
+	 */
+	snap->gen = snap->root->root_key.offset;
+
 	/* From this point forward, whenever we have an error we *have* to remove
 	 * the snapshot from the 'current_snapshots' tree.
 	 */
@@ -2964,6 +3346,12 @@ int btrfs_acid_init(struct btrfs_fs_info * fs_info)
 	atomic_set(&ctl->clock, 0);
 
 out:
+	return ret;
+}
+
+int btrfs_acid_exit(struct btrfs_fs_info * fs_info)
+{
+	int ret = 0;
 	return ret;
 }
 

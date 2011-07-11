@@ -50,6 +50,7 @@ struct btrfs_acid_log_entry
 	u64 clock;
 	u32 type;
 	size_t size;
+	u64 dirid;
 	void * data;
 
 	struct list_head list;
@@ -173,8 +174,9 @@ struct btrfs_acid_log_mmap
 	pgprot_t prot;
 	unsigned long flags;
 
-	pgoff_t first_page;
-	pgoff_t last_page;
+	struct btrfs_acid_log_rw pages;
+//	pgoff_t first_page;
+//	pgoff_t last_page;
 };
 
 int btrfs_acid_log_read(struct btrfs_acid_snapshot * snap,
