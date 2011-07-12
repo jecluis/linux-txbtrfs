@@ -3876,7 +3876,7 @@ btrfs_acid_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 	}
 
 	first = (pos >> PAGE_CACHE_SHIFT);
-	last = (pos + __file_iov_count_bytes(iov, nr_segs)) >> PAGE_CACHE_SHIFT;
+	last = (pos + __file_iov_count_bytes(iov, nr_segs) - 1) >> PAGE_CACHE_SHIFT;
 
 	inode = BTRFS_I(f_inode);
 
@@ -3891,6 +3891,7 @@ ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
 		const struct iovec *iov, unsigned long nr_segs, loff_t pos)
 {
 	ssize_t written;
+	size_t len;
 	loff_t first, last;
 	struct inode * f_inode;
 	struct btrfs_inode * inode;
@@ -3919,7 +3920,11 @@ ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
 	}
 
 	first = (pos >> PAGE_CACHE_SHIFT);
-	last = (pos + __file_iov_count_bytes(iov, nr_segs)) >> PAGE_CACHE_SHIFT;
+	len = __file_iov_count_bytes(iov, nr_segs);
+	last = (pos + len - 1) >> PAGE_CACHE_SHIFT;
+
+	BTRFS_SUB_DBG(TX, "Write: pos = %lld, len = %lu, first = %d, last = %d\n",
+			pos, len, first, last);
 
 	inode = BTRFS_I(f_inode);
 
