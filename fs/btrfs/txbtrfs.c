@@ -1837,13 +1837,13 @@ __transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap
 
 	ret = -ENOMEM;
 	nr_pages = last - first + 1;
-	txsv_pages = kzalloc(sizeof(**txsv_pages)*nr_pages, GFP_NOFS);
+	txsv_pages = kzalloc(sizeof(struct page *)*nr_pages, GFP_NOFS);
 	if (!txsv_pages)
 		goto inode_put_snap;
 
-	snap_pages = kzalloc(sizeof(**snap_pages)*nr_pages, GFP_NOFS);
-		if (!snap_pages)
-			goto free_txsv_pages;
+	snap_pages = kzalloc(sizeof(struct page *)*nr_pages, GFP_NOFS);
+	if (!snap_pages)
+		goto free_txsv_pages;
 
 	space_to_reserve = nr_pages << PAGE_CACHE_SHIFT;
 	ret = btrfs_delalloc_reserve_space(snap_inode, space_to_reserve);
@@ -1874,13 +1874,15 @@ __transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap
 		txsv_addr = kmap(txsv_pages[index]);
 		snap_addr = kmap(snap_pages[index]);
 		memcpy(snap_addr, txsv_addr, PAGE_CACHE_SIZE);
+		kunmap(txsv_pages[index]);
+		kunmap(snap_pages[index]);
 	}
 
 	for (index = first; index <= last; index ++) {
 		if (!txsv_pages[index])
 			continue;
 
-		kunmap(txsv_pages[index]);
+//		kunmap(txsv_pages[index]);
 		unlock_page(txsv_pages[index]);
 		page_cache_release(txsv_pages[index]);
 		txsv_pages[index] = NULL;
@@ -1942,9 +1944,11 @@ free_snap_pages:
 free_txsv_pages:
 	kfree(txsv_pages);
 inode_put_snap:
-			iput(snap_inode);
+	iput(snap_inode);
 inode_put_txsv:
-			iput(txsv_inode);
+	iput(txsv_inode);
+
+	return ret;
 }
 
 static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,

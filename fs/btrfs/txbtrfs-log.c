@@ -111,7 +111,7 @@ int btrfs_acid_log_read(struct btrfs_acid_snapshot * snap,
 		goto err_destroy_rw_entry;
 	}
 
-	BTRFS_SUB_DBG(LOG, "READ: Adding to write-log\n");
+	BTRFS_SUB_DBG(LOG, "READ: Adding to read-log\n");
 	list_add(&log_entry->list, &snap->read_log);
 
 	return ret;
