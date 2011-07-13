@@ -82,7 +82,7 @@ static int __transaction_validate(struct btrfs_acid_snapshot * snap,
 		struct btrfs_fs_info * fs_info);
 static int __transaction_validate_rw(struct btrfs_acid_snapshot * snap,
 		struct btrfs_acid_snapshot * txsv);
-static int __transaction_validate_rw_overlap(
+static int __transaction_check_rw_overlap(
 		struct btrfs_acid_log_rw * a, struct btrfs_acid_log_rw * b);
 
 static int __transaction_reconciliate(struct btrfs_acid_snapshot * snap,
@@ -1699,7 +1699,7 @@ out:
 	return ret;
 }
 
-static int __transaction_validate_rw_overlap(
+static int __transaction_check_rw_overlap(
 		struct btrfs_acid_log_rw * a, struct btrfs_acid_log_rw * b)
 {
 	struct btrfs_acid_log_rw * first, * last;
@@ -1748,7 +1748,7 @@ static int __transaction_validate_rw(struct btrfs_acid_snapshot * snap,
 				continue;
 			txsv_rw = (struct btrfs_acid_log_rw *) txsv_entry->data;
 
-			if (__transaction_validate_rw_overlap(txsv_rw, snap_rw))
+			if (__transaction_check_rw_overlap(txsv_rw, snap_rw))
 				return -EPERM;
 		}
 	}
@@ -1791,11 +1791,297 @@ out:
 	return ret;
 }
 
+#if 1
+
+static int
+__transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap_root,
+		u64 ino, pgoff_t first, pgoff_t last)
+{
+	struct inode * txsv_inode, * snap_inode;
+	struct super_block * sb;
+	u64 space_to_reserve;
+	int nr_pages;
+	struct page ** txsv_pages, ** snap_pages;
+	struct btrfs_key key;
+	void * txsv_addr, * snap_addr;
+	u64 start_pos, num_bytes, end_of_last_block;
+	u32 sectorsize;
+	pgoff_t index;
+	int ret = 0;
+
+	if (!txsv_root || !snap_root)
+		return -EINVAL;
+
+	sb = txsv_root->fs_info->sb;
+
+	key.objectid = ino;
+	key.type = BTRFS_INODE_ITEM_KEY;
+	key.offset = 0;
+
+	ret = -ENOENT;
+	txsv_inode = btrfs_iget(sb, &key, txsv_root, NULL);
+	if (!txsv_inode) {
+		BTRFS_SUB_DBG(TX_RECONCILIATE,
+				"\tinode [%llu %d %llu]Êdoes not exist in TxSv !!\n",
+				key.objectid, key.type, key.offset);
+		return ret;
+	}
+
+	snap_inode = btrfs_iget(sb, &key, snap_root, NULL);
+	if (!snap_inode) {
+		BTRFS_SUB_DBG(TX_RECONCILIATE,
+				"\tinode [%llu %d %llu]Êdoes not exist in Snapshot !!\n",
+				key.objectid, key.type,	key.offset);
+		goto inode_put_txsv;
+	}
+
+	ret = -ENOMEM;
+	nr_pages = last - first + 1;
+	txsv_pages = kzalloc(sizeof(**txsv_pages)*nr_pages, GFP_NOFS);
+	if (!txsv_pages)
+		goto inode_put_snap;
+
+	snap_pages = kzalloc(sizeof(**snap_pages)*nr_pages, GFP_NOFS);
+		if (!snap_pages)
+			goto free_txsv_pages;
+
+	space_to_reserve = nr_pages << PAGE_CACHE_SHIFT;
+	ret = btrfs_delalloc_reserve_space(snap_inode, space_to_reserve);
+	if (ret) {
+		BTRFS_SUB_DBG(TX_RECONCILIATE, "Unable to reserve space !!\n");
+		goto free_snap_pages;
+	}
+
+	for (index = first;	index <= last; index ++) {
+		txsv_pages[index] = __get_page(txsv_inode, index);
+		if (!txsv_pages[index]) {
+			BTRFS_SUB_DBG(TX_RECONCILIATE,
+					"\tInvalid txsv page index (%lu) or something\n", index);
+			ret = -ENOMEM;
+			break;
+		}
+
+		snap_pages[index] = __get_page(snap_inode, index);
+		if (!snap_pages[index]) {
+			BTRFS_SUB_DBG(TX_RECONCILIATE,
+					"\tInvalid snap page index (%lu) or something\n", index);
+//			unlock_page(txsv_page);
+//			page_cache_release(txsv_page);
+			ret = -ENOMEM;
+			break;
+		}
+
+		txsv_addr = kmap(txsv_pages[index]);
+		snap_addr = kmap(snap_pages[index]);
+		memcpy(snap_addr, txsv_addr, PAGE_CACHE_SIZE);
+	}
+
+	for (index = first; index <= last; index ++) {
+		if (!txsv_pages[index])
+			continue;
+
+		kunmap(txsv_pages[index]);
+		unlock_page(txsv_pages[index]);
+		page_cache_release(txsv_pages[index]);
+		txsv_pages[index] = NULL;
+	}
+
+	if (ret < 0)
+		goto err_pages;
+
+//		kunmap(txsv_page);
+//		unlock_page(txsv_page); /* this should be in a '__put_page()' */
+//		page_cache_release(txsv_page);
+
+//		start_pos = ((index << PAGE_CACHE_SHIFT) & ~(sectorsize - 1));
+	start_pos = ((first << PAGE_CACHE_SHIFT) & ~(snap_root->sectorsize - 1));
+	num_bytes = space_to_reserve;
+	end_of_last_block = (start_pos + num_bytes - 1);
+	ret = btrfs_set_extent_delalloc(snap_inode, start_pos,
+			end_of_last_block, NULL);
+	BUG_ON(ret);
+
+err_pages:
+	for (index = first; index <= last; index ++) {
+		if (!snap_pages[index])
+			continue;
+
+		SetPageUptodate(snap_pages[index]);
+		ClearPageChecked(snap_pages[index]);
+		set_page_dirty(snap_pages[index]);
+
+		unlock_page(snap_pages[index]);
+		mark_page_accessed(snap_pages[index]);
+		page_cache_release(snap_pages[index]);
+	}
+
+	if (ret < 0) {
+		btrfs_delalloc_release_space(snap_inode, space_to_reserve);
+		goto free_snap_pages;
+	}
+	balance_dirty_pages_ratelimited_nr(snap_inode->i_mapping, 1);
+	btrfs_throttle(snap_root);
+	BTRFS_I(snap_inode)->last_trans = snap_root->fs_info->generation + 1;
+	btrfs_wait_ordered_range(snap_inode, start_pos, space_to_reserve);
+
+
 #if 0
+
+		set_page_dirty(snap_page);
+		ret = write_one_page(snap_page, 0);
+		if (ret < 0) {
+			BTRFS_SUB_DBG(TX_RECONCILIATE, "\tError on Write One Page\n");
+		}
+		kunmap(snap_page);
+		//			unlock_page(snap_page);
+		page_cache_release(snap_page);
+#endif
+
+free_snap_pages:
+	kfree(snap_pages);
+free_txsv_pages:
+	kfree(txsv_pages);
+inode_put_snap:
+			iput(snap_inode);
+inode_put_txsv:
+			iput(txsv_inode);
+}
+
 static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
 		struct btrfs_acid_snapshot * txsv)
 {
+	struct _inode_list {
+		u64 ino;
+		struct list_head list;
+	};
+	struct _entry_list {
+		struct btrfs_acid_log_rw entry;
+		struct list_head list;
+	};
+	struct radix_tree_root tree;
+	struct list_head written_inodes;
+	struct list_head * tree_list;
+	struct list_head * lst_ptr, * lst_tmp_ptr;
+	struct list_head * tree_lst_ptr, * tree_lst_tmp_ptr;
+	struct _inode_list * inode_item;
+	struct _entry_list * entry_item;
+
 	int ret = 0;
+	struct btrfs_acid_log_entry * txsv_entry, * snap_entry;
+	struct btrfs_acid_log_rw * txsv_rw, * snap_rw;
+	u64 ino;
+	int overlaps;
+
+	if (list_empty(&txsv->write_log))
+		return 0;
+
+	INIT_LIST_HEAD(&written_inodes);
+	INIT_RADIX_TREE(&tree, GFP_ATOMIC);
+
+
+	list_for_each_entry(txsv_entry, &txsv->write_log, list) {
+		if (txsv_entry->type != BTRFS_ACID_LOG_WRITE)
+			continue;
+
+		if (list_empty(&snap->write_log))
+			goto just_do_it;
+
+		txsv_rw = (struct btrfs_acid_log_rw *) txsv_entry->data;
+
+		ino = txsv_entry->location.objectid;
+
+		list_for_each_entry(snap_entry, &snap->write_log, list) {
+			if (snap_entry->type != BTRFS_ACID_LOG_WRITE)
+				continue;
+
+			if (memcmp(&snap_entry->location, &txsv_entry->location,
+					sizeof(snap_entry->location))) {
+				continue;
+			}
+
+			tree_list = radix_tree_lookup(&tree, ino);
+			if (!tree_list) {
+				tree_list = kzalloc(sizeof(*tree_list), GFP_NOFS);
+				if (!tree_list) {
+					ret = PTR_ERR(tree_list);
+					goto err_free_lists;
+				}
+
+				inode_item = kzalloc(sizeof(*inode_item), GFP_NOFS);
+				if (!inode_item) {
+					kfree(tree_list);
+					goto err_free_lists;
+				}
+				inode_item->ino = ino;
+
+				INIT_LIST_HEAD(tree_list);
+				radix_tree_insert(&tree, ino, tree_list);
+				list_add(&inode_item->list, &written_inodes);
+			}
+			break;
+		}
+
+just_do_it:
+		if (list_empty(tree_list))
+			goto no_overlap;
+
+		overlaps = 0;
+		list_for_each_entry(entry_item, tree_list, list) {
+			if (!__transaction_check_rw_overlap(&entry_item->entry, txsv_rw))
+				continue;
+
+			overlaps = 1;
+			entry_item->entry.first_page =
+					(entry_item->entry.first_page < txsv_rw->first_page ?
+							entry_item->entry.first_page : txsv_rw->first_page);
+			entry_item->entry.last_page =
+					(entry_item->entry.last_page > txsv_rw->last_page ?
+					entry_item->entry.last_page : txsv_rw->last_page);
+			break;
+		}
+
+no_overlap:
+		if (!overlaps) {
+			entry_item = kzalloc(sizeof(*entry_item), GFP_NOFS);
+			if (!entry_item)
+				goto err_free_lists;
+			memcpy(&entry_item->entry, txsv_rw, sizeof(*txsv_rw));
+			list_add(&entry_item->list, tree_list);
+		}
+	}
+
+	list_for_each_entry(inode_item, &written_inodes, list) {
+		ino = inode_item->ino;
+		tree_list = radix_tree_lookup(&tree, ino);
+		BUG_ON(!tree_list);
+
+		list_for_each_entry(entry_item, tree_list, list) {
+			BTRFS_SUB_DBG(TX_RECONCILIATE, "\tinterval: [%lu, %lu]\n",
+					entry_item->entry.first_page, entry_item->entry.last_page);
+			__transaction_copy_pages(txsv->root, snap->root, ino,
+					entry_item->entry.first_page, entry_item->entry.last_page);
+		}
+	}
+
+err_free_lists:
+	/* frees everything we allocated so far. */
+	list_for_each_safe(lst_ptr, lst_tmp_ptr, &written_inodes) {
+		inode_item = list_entry(lst_ptr, struct _inode_list, list);
+		ino = inode_item->ino;
+		tree_list = radix_tree_lookup(&tree, ino);
+		if (!tree_list)
+			goto free_list_inode;
+
+		list_for_each_safe(tree_lst_ptr, tree_lst_tmp_ptr, tree_list) {
+			entry_item = list_entry(tree_lst_ptr, struct _entry_list, list);
+			list_del(tree_lst_ptr);
+			kfree(entry_item);
+		}
+
+free_list_inode:
+		list_del(lst_ptr);
+		kfree(inode_item);
+	}
 
 	return ret;
 }
