@@ -1808,6 +1808,8 @@ __transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap
 	u32 sectorsize;
 	pgoff_t index;
 	int ret = 0;
+	int i;
+	unsigned long int dirty_pages_cnt = 0;
 
 	if (!txsv_root || !snap_root)
 		return -EINVAL;
@@ -1852,17 +1854,17 @@ __transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap
 		goto free_snap_pages;
 	}
 
-	for (index = first;	index <= last; index ++) {
-		txsv_pages[index] = __get_page(txsv_inode, index);
-		if (!txsv_pages[index]) {
+	for (index = first, i = 0; i < nr_pages; i ++, index ++) {
+		txsv_pages[i] = __get_page(txsv_inode, index);
+		if (!txsv_pages[i]) {
 			BTRFS_SUB_DBG(TX_RECONCILIATE,
 					"\tInvalid txsv page index (%lu) or something\n", index);
 			ret = -ENOMEM;
 			break;
 		}
 
-		snap_pages[index] = __get_page(snap_inode, index);
-		if (!snap_pages[index]) {
+		snap_pages[i] = __get_page(snap_inode, index);
+		if (!snap_pages[i]) {
 			BTRFS_SUB_DBG(TX_RECONCILIATE,
 					"\tInvalid snap page index (%lu) or something\n", index);
 //			unlock_page(txsv_page);
@@ -1871,21 +1873,21 @@ __transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap
 			break;
 		}
 
-		txsv_addr = kmap(txsv_pages[index]);
-		snap_addr = kmap(snap_pages[index]);
+		txsv_addr = kmap(txsv_pages[i]);
+		snap_addr = kmap(snap_pages[i]);
 		memcpy(snap_addr, txsv_addr, PAGE_CACHE_SIZE);
-		kunmap(txsv_pages[index]);
-		kunmap(snap_pages[index]);
+		kunmap(txsv_pages[i]);
+		kunmap(snap_pages[i]);
 	}
 
-	for (index = first; index <= last; index ++) {
-		if (!txsv_pages[index])
+	for (i = 0; i < nr_pages; i ++) {
+		if (!txsv_pages[i])
 			continue;
 
 //		kunmap(txsv_pages[index]);
-		unlock_page(txsv_pages[index]);
-		page_cache_release(txsv_pages[index]);
-		txsv_pages[index] = NULL;
+		unlock_page(txsv_pages[i]);
+		page_cache_release(txsv_pages[i]);
+		txsv_pages[i] = NULL;
 	}
 
 	if (ret < 0)
@@ -1904,24 +1906,26 @@ __transaction_copy_pages(struct btrfs_root * txsv_root, struct btrfs_root * snap
 	BUG_ON(ret);
 
 err_pages:
-	for (index = first; index <= last; index ++) {
-		if (!snap_pages[index])
+	for (i = 0; i < nr_pages; i ++) {
+		if (!snap_pages[i])
 			continue;
 
-		SetPageUptodate(snap_pages[index]);
-		ClearPageChecked(snap_pages[index]);
-		set_page_dirty(snap_pages[index]);
+		SetPageUptodate(snap_pages[i]);
+		ClearPageChecked(snap_pages[i]);
+		set_page_dirty(snap_pages[i]);
 
-		unlock_page(snap_pages[index]);
-		mark_page_accessed(snap_pages[index]);
-		page_cache_release(snap_pages[index]);
+		unlock_page(snap_pages[i]);
+		mark_page_accessed(snap_pages[i]);
+		page_cache_release(snap_pages[i]);
+
+		dirty_pages_cnt ++;
 	}
 
 	if (ret < 0) {
 		btrfs_delalloc_release_space(snap_inode, space_to_reserve);
 		goto free_snap_pages;
 	}
-	balance_dirty_pages_ratelimited_nr(snap_inode->i_mapping, 1);
+	balance_dirty_pages_ratelimited_nr(snap_inode->i_mapping, dirty_pages_cnt);
 	btrfs_throttle(snap_root);
 	BTRFS_I(snap_inode)->last_trans = snap_root->fs_info->generation + 1;
 	btrfs_wait_ordered_range(snap_inode, start_pos, space_to_reserve);
