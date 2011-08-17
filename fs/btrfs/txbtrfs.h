@@ -22,6 +22,7 @@
 #include <linux/kernel.h>
 #include <linux/dcache.h>
 #include <linux/time.h>
+#include <linux/mutex.h>
 #include "ioctl.h"
 #include "txbtrfs-ctl.h"
 #include "ctree.h"
@@ -34,6 +35,16 @@ struct btrfs_fs_info;
 struct btrfs_trans_handle;
 
 #endif /* if 0 */
+
+struct btrfs_acid_cr_log {
+	struct radix_tree_root parents;
+	struct radix_tree_root inodes;
+	struct list_head parents_list;
+
+	struct rw_semaphore parents_sem;
+	struct rw_semaphore inodes_sem;
+	struct rw_semaphore parents_list_sem;
+};
 
 /* txbtrfs specific structs */
 struct btrfs_acid_snapshot_pid
@@ -64,10 +75,19 @@ struct btrfs_acid_snapshot
 	int dead:1;
 	int committed:1;
 
+	atomic_t clock;
+
+#if 0
 	// read-set
 	struct list_head read_log;
 	// write-set
 	struct list_head write_log;
+
+	struct btrfs_acid_cr_log cr_log;
+#else
+	struct list_head op_log;
+	struct mutex op_log_mutex;
+#endif
 };
 
 #if 0
@@ -163,6 +183,8 @@ struct btrfs_acid_snapshot
 /* external methods */
 //struct btrfs_key * btrfs_acid_copy_key(struct btrfs_key * src);
 int btrfs_acid_copy_key(struct btrfs_key * dst, struct btrfs_key * src);
+int btrfs_acid_copy_qstr(struct qstr * dst, struct qstr * src);
+struct btrfs_key * btrfs_acid_clone_key(struct btrfs_key * key);
 
 //int btrfs_acid_init(struct btrfs_fs_info * fs_info);
 

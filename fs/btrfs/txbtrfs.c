@@ -35,6 +35,7 @@
 #include "txbtrfs.h"
 #include "txbtrfs-log.h"
 #include "txbtrfs-misc.h"
+#include "txbtrfs-reconcile.h"
 #include "hash.h"
 #include "xattr.h"
 
@@ -65,6 +66,8 @@ static int __snapshot_destroy(struct btrfs_acid_snapshot * snap);
 static int __snapshot_set_perms(struct inode * dir, struct dentry * dentry);
 static struct dentry *
 __snapshot_instantiate_dentry(struct dentry * dentry);
+static int __snapshot_logs_init_cr(struct btrfs_acid_cr_log * crl);
+static int __snapshot_logs_init(struct btrfs_acid_snapshot * snap);
 static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 		struct qstr * path, struct inode * parent);
 static int __snapshot_remove_pid(struct btrfs_acid_ctl * ctl, pid_t pid);
@@ -119,6 +122,42 @@ int btrfs_acid_copy_key(struct btrfs_key * dst, struct btrfs_key * src)
 	dst->objectid = src->objectid;
 	dst->type = src->type;
 	dst->offset = src->offset;
+
+	return 0;
+}
+
+/**
+ * btrfs_acid_clone_key - Clones @key into a newly allocated btrfs_key.
+ */
+struct btrfs_key * btrfs_acid_clone_key(struct btrfs_key * key)
+{
+	struct btrfs_key * clone;
+
+	if (!key)
+		return ERR_PTR(-EINVAL);
+
+	clone = kzalloc(sizeof(*clone), GFP_NOFS);
+	if (!clone)
+		return ERR_PTR(-ENOMEM);
+	memcpy(clone, key, sizeof(*key));
+	return clone;
+}
+
+/**
+ * btrfs_acid_copy_key - Copy the contents of qstr 'src' to qstr 'dst'.
+ */
+int btrfs_acid_copy_qstr(struct qstr * dst, struct qstr * src)
+{
+	if (!dst || !src)
+		return -EINVAL;
+
+	dst->hash = src->hash;
+	dst->len = src->len;
+	dst->name = kzalloc(sizeof(*dst->name) * dst->len, GFP_NOFS);
+	if (!dst->name) {
+		return -ENOMEM;
+	}
+	memcpy((void *) dst->name, src->name, dst->len);
 
 	return 0;
 }
@@ -300,8 +339,7 @@ static struct btrfs_acid_snapshot * __txsv_create(struct btrfs_root * sv,
 
 	memcpy((void *) snap->path.name, (void *) name, name_len);
 
-	INIT_LIST_HEAD(&snap->write_log);
-	INIT_LIST_HEAD(&snap->read_log); // XXX: this should not be necessary.
+	__snapshot_logs_init(snap);
 
 	return snap;
 }
@@ -461,6 +499,8 @@ __cleanup_acid_commit_validate(struct btrfs_acid_snapshot * txsv)
 	struct extent_buffer * leaf;
 	struct btrfs_fs_info * fs_info;
 
+	char * name;
+
 	if (!txsv || !txsv->root)
 		return -EINVAL;
 
@@ -483,6 +523,14 @@ __cleanup_acid_commit_validate(struct btrfs_acid_snapshot * txsv)
 	if (btrfs_root_ref_name_len(leaf, ref) != txsv->path.len) {
 		BTRFS_SUB_DBG(TX, "TXSV name len (%d) != ROOT_REF name len (%d)\n",
 				txsv->path.len, btrfs_root_ref_name_len(leaf, ref));
+
+		name = kzalloc(sizeof(*name)*btrfs_root_ref_name_len(leaf,ref), GFP_NOFS);
+		read_extent_buffer(leaf, (void *) name, (unsigned long)(ref + 1),
+								btrfs_root_ref_name_len(leaf,ref));
+		BTRFS_SUB_DBG(TX, "TXSV name = %.*s ; ROOT_REF name = %.*s\n",
+				txsv->path.len, txsv->path.name,
+				btrfs_root_ref_name_len(leaf, ref), name);
+		kfree(name);
 		goto out;
 	}
 
@@ -502,7 +550,7 @@ out:
 	return ret;
 }
 
-#if 0
+//#if 0
 /** __cleanup_acid_commit_inconsistencies - Fix any commit inconsistency found.
  *
  * If we reach this method, it means the post-commit phase failed unexpectadly.
@@ -643,7 +691,7 @@ out:
 	btrfs_free_path(path);
 	return ret;
 }
-#endif
+//#endif
 
 
 /**
@@ -760,6 +808,7 @@ static int __cleanup_acid_subvol_fallback(struct btrfs_root * root,
 {
 	int ret;
 	struct btrfs_trans_handle * trans;
+
 	if (!bak || !old)
 		return -EINVAL;
 
@@ -875,7 +924,7 @@ __cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
 
 		if (txsv_entry->key.offset != 0) {
 			list_del(&txsv_entry->list);
-			list_add(&txsv_entry->list, &potentially_old_subvols);
+			list_add_tail(&txsv_entry->list, &potentially_old_subvols);
 			total_old_subvols ++;
 		}
 	}
@@ -959,6 +1008,19 @@ __cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
 			/* We never reached the root rename phase.
 			 * Fall back and clean up.
 			 */
+			BTRFS_SUB_DBG(TX, "txsv old entry: %p, old: %p, new: %p\n",
+					txsv_old_entry, old_entry, new_entry);
+#if 0
+			BTRFS_SUB_DBG(TX, "txsv old entry [%llu %d %llu]\n",
+					txsv_old_entry->key.objectid, txsv_old_entry->key.type,
+					txsv_old_entry->key.offset);
+			BTRFS_SUB_DBG(TX, "old entry [%llu %d %llu]\n",
+					old_entry->key.objectid, old_entry->key.type,
+					old_entry->key.offset);
+			BTRFS_SUB_DBG(TX, "new entry [%llu %d %llu]\n",
+					new_entry->key.objectid, new_entry->key.type,
+					new_entry->key.offset);
+#endif
 			ret = __cleanup_acid_subvol_fallback(tree_root,
 					&txsv_old_entry->key, &old_entry->key, &new_entry->key);
 			BUG_ON(ret < 0);
@@ -1605,6 +1667,9 @@ static void __commit_print_sets(struct btrfs_acid_snapshot * snap)
 		return;
 	}
 
+	btrfs_acid_log_ops_print(snap);
+
+#if 0
 	/* Print the read-set log */
 	head = &snap->read_log;
 	BTRFS_SUB_DBG(TX_COMMIT, "--------- READ SET ----------\n");
@@ -1645,7 +1710,160 @@ static void __commit_print_sets(struct btrfs_acid_snapshot * snap)
 
 	BTRFS_SUB_DBG(TX_COMMIT, "---- MEM FOOTPRINT = %llu bytes------\n",
 			mem_footprint);
+#endif
 }
+
+#if 0
+static int __transaction_cr_prepare(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info)
+{
+	struct btrfs_acid_cr_log * snap_crl;
+	struct list_head * read_log, * write_log;
+	struct list_head * parent_lst, * inode_lst;
+	struct btrfs_acid_log_cr_inode * cr_inode;
+	struct btrfs_acid_log_cr_entry * cr_entry, * tmp_entry;
+//	struct list_head * entry, * tmp_entry;
+
+	struct _delete_entry {
+		struct btrfs_acid_log_cr_entry * entry;
+		struct list_head list;
+
+		u16 type;
+		u64 ino;
+		u64 clock;
+	};
+	struct _delete_entry * delete_entry, * tmp_del_entry;
+	struct list_head delete_lst;
+	u16 match_type;
+	u64 clock;
+	struct btrfs_acid_log_cr_entry * create_entry;
+	struct btrfs_acid_log_entry * log_entry;
+
+	if (!snap || !fs_info)
+		return -EINVAL;
+
+	snap_crl = &snap->cr_log;
+	read_log = &snap->read_log;
+	write_log = &snap->write_log;
+
+	/* XXX: LACKING LOCKING AND ALL */
+#if 0
+	list_for_each_entry(cr_inode, &snap_crl->parents_list, list) {
+		parent_lst = radix_tree_lookup(&snap_crl->parents, cr_inode->ino);
+		BUG_ON(!parent_lst);
+		BUG_ON(list_empty(parent_lst));
+
+		INIT_LIST_HEAD(&delete_lst);
+		list_for_each_entry(cr_entry, parent_lst, parent_list) {
+			if ((cr_entry->entry->type == BTRFS_ACID_LOG_UNLINK)
+					|| (cr_entry->entry->type == BTRFS_ACID_LOG_RMDIR))
+			{
+				delete_entry = kzalloc(sizeof(*delete_entry), GFP_NOFS);
+				BUG_ON(!delete_entry);
+				delete_entry->entry = cr_entry;
+				list_add(&delete_entry->list, &delete_lst);
+				continue;
+			}
+		}
+
+		list_for_each_entry_safe(delete_entry, tmp_del_entry,
+				&delete_lst, list) {
+			BUG_ON(!delete_entry->entry);
+			inode_lst = &delete_entry->entry->inode_list;
+
+			list_for_each_entry_safe(cr_entry, tmp_entry,
+					inode_lst, inode_list) {
+				if (cr_entry->entry->clock > delete_entry->entry->entry->clock)
+					continue;
+
+
+			}
+
+		}
+
+
+	}
+#endif
+
+	list_for_each_entry(cr_inode, &snap_crl->parents_list, list) {
+		parent_lst = radix_tree_lookup(&snap_crl->parents, cr_inode->ino);
+		BUG_ON(!parent_lst);
+		BUG_ON(list_empty(parent_lst));
+
+		INIT_LIST_HEAD(&delete_lst);
+		list_for_each_entry(cr_entry, parent_lst, parent_list) {
+			BUG_ON(!cr_entry->entry);
+			if (cr_entry->entry->type == BTRFS_ACID_LOG_UNLINK) {
+				delete_entry = kzalloc(sizeof(*delete_entry), GFP_NOFS);
+				BUG_ON(!delete_entry);
+				delete_entry->entry = cr_entry;
+				delete_entry->type = cr_entry->entry->type;
+				delete_entry->ino = cr_entry->entry->location.objectid;
+				delete_entry->clock = cr_entry->entry->clock;
+				list_add(&delete_entry->list, &delete_lst);
+			}
+		}
+	}
+
+	list_for_each_entry(delete_entry, &delete_lst, list) {
+		inode_lst = radix_tree_lookup(&snap_crl->inodes, delete_entry->ino);
+		BUG_ON(!inode_lst);
+		BUG_ON(list_empty(inode_lst));
+
+		create_entry = NULL;
+		match_type = (delete_entry->type == BTRFS_ACID_LOG_UNLINK ?
+				BTRFS_ACID_LOG_CREATE : BTRFS_ACID_LOG_RMDIR);
+		list_for_each_entry(cr_entry, inode_lst, inode_list) {
+			clock = cr_entry->entry->clock;
+			if ((cr_entry->entry->type == match_type)
+					&& (clock <= delete_entry->clock)) {
+				create_entry = cr_entry;
+				break;
+			}
+		}
+
+		/* if create_entry == NULL: 1) remove all entries from R/W-logs with
+		 * clock < delete_entry->clock && ino == delete_entry->ino; 2) leave
+		 * the delete_entry in the list.
+		 * else: same as 1); 2) remove both create and delete entries.
+		 */
+//		clock = (create_entry ? create_entry->clock : 0);
+//		ret = btrfs_acid_log_purge(&snap->write_log, clock, delete_entry->clock);
+
+	}
+
+
+}
+
+static int __transaction_cr_merge(struct btrfs_acid_snapshot * snap,
+		struct btrfs_fs_info * fs_info)
+{
+	struct btrfs_acid_snapshot * txsv;
+	struct btrfs_acid_ctl * ctl;
+	struct btrfs_acid_cr_log * snap_crl, * txsv_crl;
+	int ret = 0;
+
+	if (!snap || !fs_info)
+		return -EINVAL;
+
+	ctl = &fs_info->acid_ctl;
+	down_read(&ctl->sv_sem);
+	txsv = ctl->sv;
+
+	txsv_crl = &txsv->cr_log;
+	snap_crl = &snap->cr_log;
+
+
+
+
+
+
+up_read_txsv:
+	up_read(&ctl->sv_sem);
+
+	return ret;
+}
+//#endif
 
 /** __transaction_validate - Validates a transaction.
  *
@@ -1980,6 +2198,7 @@ static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
 	u64 ino;
 	int overlaps;
 
+	BTRFS_SUB_DBG(TX_RECONCILIATE, "Reconciliating R/W\n");
 	if (list_empty(&txsv->write_log))
 		return 0;
 
@@ -1998,6 +2217,26 @@ static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
 
 		ino = txsv_entry->location.objectid;
 
+		tree_list = radix_tree_lookup(&tree, ino);
+		if (!tree_list) {
+			tree_list = kzalloc(sizeof(*tree_list), GFP_NOFS);
+			if (!tree_list) {
+				ret = PTR_ERR(tree_list);
+				goto err_free_lists;
+			}
+
+			inode_item = kzalloc(sizeof(*inode_item), GFP_NOFS);
+			if (!inode_item) {
+				kfree(tree_list);
+				goto err_free_lists;
+			}
+			inode_item->ino = ino;
+
+			INIT_LIST_HEAD(tree_list);
+			radix_tree_insert(&tree, ino, tree_list);
+			list_add(&inode_item->list, &written_inodes);
+		}
+
 		list_for_each_entry(snap_entry, &snap->write_log, list) {
 			if (snap_entry->type != BTRFS_ACID_LOG_WRITE)
 				continue;
@@ -2006,34 +2245,15 @@ static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
 					sizeof(snap_entry->location))) {
 				continue;
 			}
-
-			tree_list = radix_tree_lookup(&tree, ino);
-			if (!tree_list) {
-				tree_list = kzalloc(sizeof(*tree_list), GFP_NOFS);
-				if (!tree_list) {
-					ret = PTR_ERR(tree_list);
-					goto err_free_lists;
-				}
-
-				inode_item = kzalloc(sizeof(*inode_item), GFP_NOFS);
-				if (!inode_item) {
-					kfree(tree_list);
-					goto err_free_lists;
-				}
-				inode_item->ino = ino;
-
-				INIT_LIST_HEAD(tree_list);
-				radix_tree_insert(&tree, ino, tree_list);
-				list_add(&inode_item->list, &written_inodes);
-			}
 			break;
 		}
 
 just_do_it:
+		overlaps = 0;
+		BTRFS_SUB_DBG(TX_RECONCILIATE, "Finished overlaps calculation\n");
 		if (list_empty(tree_list))
 			goto no_overlap;
 
-		overlaps = 0;
 		list_for_each_entry(entry_item, tree_list, list) {
 			if (!__transaction_check_rw_overlap(&entry_item->entry, txsv_rw))
 				continue;
@@ -2064,7 +2284,8 @@ no_overlap:
 		BUG_ON(!tree_list);
 
 		list_for_each_entry(entry_item, tree_list, list) {
-			BTRFS_SUB_DBG(TX_RECONCILIATE, "\tinterval: [%lu, %lu]\n",
+			BTRFS_SUB_DBG(TX_RECONCILIATE, "\tino %llu, interval: [%lu, %lu]\n",
+					ino,
 					entry_item->entry.first_page, entry_item->entry.last_page);
 			__transaction_copy_pages(txsv->root, snap->root, ino,
 					entry_item->entry.first_page, entry_item->entry.last_page);
@@ -2273,6 +2494,7 @@ static struct page * __get_page(struct inode * inode, pgoff_t index)
 	wait_on_page_writeback(page);
 	return page;
 }
+#endif
 
 /**
  * btrfs_acid_tx_commit - Commits a transaction to the master branch.
@@ -2337,6 +2559,25 @@ int btrfs_acid_tx_commit(struct file * file)
 		goto out;
 
 	__commit_print_sets(snap);
+#if 0
+	btrfs_acid_log_cr_print(snap);
+
+	down_read(&ctl->sv_sem);
+	btrfs_acid_log_cr_print(ctl->sv);
+	up_read(&ctl->sv_sem);
+
+	ret = __transaction_cr_prepare(snap, fs_info);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_COMMIT, "Error Preparing CR-Logs (PID = %d)\n",
+				get_current()->pid);
+		goto out;
+	}
+//	ret = __transaction_cr_merge(snap, fs_info);
+//	if (ret < 0) {
+//		BTRFS_SUB_DBG(TX_COMMIT, "Error Merging CR-Logs (PID = %d)\n",
+//				get_current()->pid);
+//		goto out;
+//	}
 
 	/* At this point we must validate the transaction against the TxSv.
 	 * If validation succeeds, we may then finalize the commit (i.e., changing
@@ -2358,6 +2599,39 @@ int btrfs_acid_tx_commit(struct file * file)
 				get_current()->pid);
 		goto out;
 	}
+#else
+
+	/* Committing a transaction will be a two-step process, composed
+	 * by Validation & Reconciliation.
+	 *
+	 * First of all, the validation process shall do a symbolic execution of
+	 * both the TxSv's logs (hereinafter known as the Master Copy) and the
+	 * Snapshot's logs. This is a valid approach since both logs are kept
+	 * ordered in temporal order: i.e., if an operation A precedes operation B
+	 * in temporal order, then A comes in the log before B. With a symbolic
+	 * execution we will be able to detect conflicts as we are processing the
+	 * log.
+	 *
+	 * The reconciliation process shall then apply all operations that
+	 * effectively change the FS. This condition will render null all operations
+	 * over unlinked files (i.e., files that do not effectively exist on the
+	 * final FS). For the remaining operations, those changing blocks on files
+	 * initially existing on both copies (Master & Snapshot), will be copied
+	 * from the Master's to the Snapshot's; those over files only existing in
+	 * the Master Copy will also be rendered null, and the whole files will be
+	 * effectively copied from the Master Copy to the Snapshot.
+	 */
+	down_read(&ctl->sv_sem);
+	ret = btrfs_acid_reconcile(ctl->sv, snap);
+	up_read(&ctl->sv_sem);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_COMMIT, "RECONCILIATION FAILED (%s)!\n",
+				(ret == -EPERM ? "CONFLICT" :
+						(ret == -EINVAL ? "INVALID" : "?")));
+		goto err_cleanup;
+	}
+
+#endif
 
 	BTRFS_SUB_DBG(TX_COMMIT, "Committing transaction PID = %d\n",
 			get_current()->pid);
@@ -2385,7 +2659,14 @@ out:
 	dput(sv_dentry);
 	dput(parent_dentry);
 
+	d_drop(sv_dentry);
+	d_drop(parent_dentry);
+
 	return ret;
+
+err_cleanup:
+	/* cleanup snapshots */
+	goto out;
 }
 
 //#if 0
@@ -3244,7 +3525,7 @@ out:
 
 /* Handle an extraordinary error condition. */
 err_compensate_trans:
-	/* Remove the snapshot item and the snapshot tree */
+	/* XXX: Remove the snapshot item and the snapshot tree */
 	goto out_put_dentry;
 }
 
@@ -3780,6 +4061,42 @@ fail:
 	return dentry;
 }
 
+static int __snapshot_logs_init_cr(struct btrfs_acid_cr_log * crl)
+{
+	if (!crl)
+		return -EINVAL;
+
+	INIT_RADIX_TREE(&crl->parents, GFP_ATOMIC);
+	INIT_RADIX_TREE(&crl->inodes, GFP_ATOMIC);
+	INIT_LIST_HEAD(&crl->parents_list);
+
+	init_rwsem(&crl->parents_sem);
+	init_rwsem(&crl->inodes_sem);
+	init_rwsem(&crl->parents_list_sem);
+
+	return 0;
+}
+
+static int __snapshot_logs_init(struct btrfs_acid_snapshot * snap)
+{
+	int ret = 0;
+	if (!snap)
+		return -EINVAL;
+
+#if 0
+	INIT_LIST_HEAD(&snap->write_log);
+	INIT_LIST_HEAD(&snap->read_log);
+
+	ret = __snapshot_logs_init_cr(&snap->cr_log);
+	if (ret < 0)
+		BTRFS_SUB_DBG(TX, "Error initiating Snapshot's CR-Log\n");
+#endif
+	INIT_LIST_HEAD(&snap->op_log);
+	mutex_init(&snap->op_log_mutex);
+
+	return ret;
+}
+
 /* Creates a new struct btrfs_acid_snapshot representing the snapshot with
  * root at 'root' and path at 'path', and add it to the 'current_snapshots'
  * tree in 'struct btrfs_acid_ctl', associating it with the current process'
@@ -3866,20 +4183,23 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 	snap->hash = btrfs_name_hash(path->name, path->len);
 
 	/* Initiate read/write logs */
-	INIT_LIST_HEAD(&snap->read_log);
-	INIT_LIST_HEAD(&snap->write_log);
+//	INIT_LIST_HEAD(&snap->read_log);
+//	INIT_LIST_HEAD(&snap->write_log);
+
+	ret = __snapshot_logs_init(snap);
+	if (ret < 0)
+		goto out_err;
 
 	/* Snapshot entry created; now we must insert it to the snapshot's tree. */
 	down_write(&ctl->curr_snaps_sem);
 	ret = radix_tree_insert(&ctl->current_snapshots, snap->owner_pid, snap);
+	up_write(&ctl->curr_snaps_sem);
 
-	if (ret)
-	{
+out_err:
+	if (ret) {
 		kfree(snap);
 		snap = ERR_PTR(ret);
 	}
-
-	up_write(&ctl->curr_snaps_sem);
 
 	return snap;
 }
@@ -4062,10 +4382,16 @@ ssize_t btrfs_acid_sync_read(struct file * file,
 	int first = pos >> PAGE_CACHE_SHIFT;
 	int last = (len + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
 
-	struct inode * f_inode = file->f_path.dentry->d_inode;
-	struct btrfs_inode * inode;
-	struct btrfs_key * location;
+//	struct inode * f_inode = file->f_path.dentry->d_inode;
+	struct dentry * file_dentry;
+	struct inode * f_inode;
+	struct btrfs_inode * parent, * inode;
+	struct qstr * name;
+//	struct btrfs_key * location;
 	ssize_t ret;
+
+	file_dentry = fdentry(file);
+	f_inode = file_dentry->d_inode;
 
 	ret = btrfs_acid_allow(f_inode);
 	if (ret < 0) {
@@ -4077,13 +4403,17 @@ ssize_t btrfs_acid_sync_read(struct file * file,
 	if (ret < 0)
 		goto out;
 
+	parent = BTRFS_I(file_dentry->d_parent->d_inode);
 	inode = BTRFS_I(f_inode);
-	if (!inode)
+	name = &file_dentry->d_name;
+
+	if (!inode || !parent || !name)
 		return -EINVAL;
-	location = &inode->location;
+//	location = &inode->location;
 
 	BUG_ON(!inode->root->snap);
-	btrfs_acid_log_read(inode->root->snap, location, first, last);
+	ret = btrfs_acid_log_read(parent, inode, name, first, last);
+//	btrfs_acid_log_read(inode->root->snap, location, first, last);
 out:
 	return ret;
 }
@@ -4095,10 +4425,16 @@ ssize_t btrfs_acid_sync_write(struct file * file,
 	int first = pos >> PAGE_CACHE_SHIFT;
 	int last = (len + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
 
-	struct inode * f_inode = file->f_path.dentry->d_inode;
-	struct btrfs_inode * inode;
-	struct btrfs_key * location;
+	struct dentry * file_dentry;
+//	struct inode * f_inode = file->f_path.dentry->d_inode;
+	struct inode * f_inode;
+	struct btrfs_inode * parent, * inode;
+	struct qstr * name;
+//	struct btrfs_key * location;
 	ssize_t ret;
+
+	file_dentry = fdentry(file);
+	f_inode = file_dentry->d_inode;
 
 	ret = btrfs_acid_allow(f_inode);
 	if (ret < 0) {
@@ -4110,13 +4446,17 @@ ssize_t btrfs_acid_sync_write(struct file * file,
 	if (ret < 0)
 		goto out;
 
+	parent = BTRFS_I(file_dentry->d_parent->d_inode);
 	inode = BTRFS_I(f_inode);
+	name = &file_dentry->d_name;
+
 	if (!inode)
 		return -EINVAL;
-	location = &inode->location;
+//	location = &inode->location;
 
 	BUG_ON(!inode->root->snap);
-	btrfs_acid_log_write(inode->root->snap, location, first, last);
+//	btrfs_acid_log_write(inode->root->snap, location, first, last);
+	btrfs_acid_log_write(parent, inode, name, first, last);
 out:
 	return ret;
 }
@@ -4143,16 +4483,21 @@ btrfs_acid_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 {
 	ssize_t read;
 	loff_t first, last;
-	struct inode * f_inode;
-	struct btrfs_inode * inode;
+	struct dentry * file_dentry;
+	struct btrfs_inode *parent, * inode;
 	int ret;
 
 	BTRFS_SUB_DBG(CALL, "");
 
-	f_inode = fdentry(iocb->ki_filp)->d_inode;
-	BUG_ON(!f_inode);
+	file_dentry = fdentry(iocb->ki_filp);
+//	f_inode = fdentry(iocb->ki_filp)->d_inode;
+	parent = BTRFS_I(file_dentry->d_parent->d_inode);
+	inode = BTRFS_I(file_dentry->d_inode);
+//	BUG_ON(!f_inode);
+	BUG_ON(!parent || !inode);
 
-	ret = btrfs_acid_allow(f_inode);
+//	ret = btrfs_acid_allow(f_inode);
+	ret = btrfs_acid_allow(file_dentry->d_inode);
 	if (ret < 0) {
 		BTRFS_SUB_DBG(ACCESS, "Refused access to PID %d\n", current->pid);
 		return ret;
@@ -4172,12 +4517,14 @@ btrfs_acid_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 	first = (pos >> PAGE_CACHE_SHIFT);
 	last = (pos + __file_iov_count_bytes(iov, nr_segs) - 1) >> PAGE_CACHE_SHIFT;
 
-	inode = BTRFS_I(f_inode);
+//	inode = BTRFS_I(f_inode);
 
-	btrfs_acid_log_read(inode->root->snap, &inode->location, first, last);
+	ret = btrfs_acid_log_read(parent, inode, &file_dentry->d_name,
+			first, last);
+//	btrfs_acid_log_read(inode->root->snap, &inode->location, first, last);
 
 	out:
-	return read;
+	return (!ret ? read : ret);
 
 }
 
@@ -4187,19 +4534,26 @@ ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
 	ssize_t written;
 	size_t len;
 	loff_t first, last;
+	struct dentry * file_dentry;
 	struct inode * f_inode;
-	struct btrfs_inode * inode;
-	int ret;
+	struct btrfs_inode * parent, * inode;
+	struct qstr * name;
+	int err;
 
 	BTRFS_SUB_DBG(CALL, "");
 
-	f_inode = fdentry(iocb->ki_filp)->d_inode;
+	file_dentry = fdentry(iocb->ki_filp);
+	f_inode = file_dentry->d_inode;
+	parent = BTRFS_I(file_dentry->d_parent->d_inode);
+	inode = BTRFS_I(f_inode);
+	name = &file_dentry->d_name;
+
 	BUG_ON(!f_inode);
 
-	ret = btrfs_acid_allow(f_inode);
-	if (ret < 0) {
+	err = btrfs_acid_allow(f_inode);
+	if (err < 0) {
 		BTRFS_SUB_DBG(ACCESS, "Refused access to PID %d\n", current->pid);
-		return ret;
+		return err;
 	}
 
 	written = btrfs_file_aio_write(iocb, iov, nr_segs, pos);
@@ -4220,12 +4574,16 @@ ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
 	BTRFS_SUB_DBG(TX, "Write: pos = %lld, len = %lu, first = %d, last = %d\n",
 			pos, len, first, last);
 
-	inode = BTRFS_I(f_inode);
+//	inode = BTRFS_I(f_inode);
 
-	btrfs_acid_log_write(inode->root->snap, &inode->location, first, last);
+//	btrfs_acid_log_write(inode->root->snap, &inode->location, first, last);
+	err = btrfs_acid_log_write(parent, inode, name, first, last);
+	if (err < 0) {
+		BTRFS_SUB_DBG(TX, "Log returned error!\n");
+	}
 
 out:
-	return written;
+	return (!err? written : err);
 }
 
 int btrfs_acid_getattr(struct vfsmount * mnt,
@@ -4254,7 +4612,8 @@ int btrfs_acid_real_readdir(struct file * filp, void * dirent,
 	if (ret < 0)
 		goto out;
 
-	err = btrfs_acid_log_readdir(filp->f_dentry->d_inode);
+	err = btrfs_acid_log_readdir(filp);
+//	err = btrfs_acid_log_readdir(filp->f_dentry->d_inode);
 	if (err < 0)
 		BTRFS_SUB_DBG(LOG, "readdir logging returned an error\n");
 

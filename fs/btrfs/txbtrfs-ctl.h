@@ -50,6 +50,7 @@ struct btrfs_acid_ctl
 #define __TXBTRFS_DEBUG_TX_START__
 #define __TXBTRFS_DEBUG_TX_VALIDATE__
 #define __TXBTRFS_DEBUG_TX_RECONCILIATE__
+#define __TXBTRFS_DEBUG_CR_LOG__
 #endif /* __TXBTRFS_DEBUG__ */
 
 #ifdef __TXBTRFS_DEBUG_TX__
@@ -131,6 +132,13 @@ struct btrfs_acid_ctl
 #else
 #define BTRFS_TX_RECONCILIATE_DBG(prefix, fmt, args...) do {} while (0)
 #endif /* __TXBTRFS_DEBUG_TX_RECONCILIATE__ */
+
+#ifdef __TXBTRFS_DEBUG_CR_LOG__
+#define BTRFS_CR_LOG_DBG(prefix, fmt, args...) \
+	printk(KERN_DEBUG "<CR-LOG> (%s): " fmt, prefix, ## args)
+#else
+#define BTRFS_CR_LOG_DBG(prefix, fmt, args...) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_RC_LOG__ */
 
 
 

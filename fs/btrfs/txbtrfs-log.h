@@ -22,6 +22,7 @@
 #include "ctree.h"
 #include "txbtrfs.h"
 
+#if 0
 #define BTRFS_ACID_LOG_READ				(1 << 0)
 #define BTRFS_ACID_LOG_WRITE			(1 << 1)
 #define BTRFS_ACID_LOG_ATTR_GET			(1 << 2)
@@ -42,112 +43,245 @@
 #define BTRFS_ACID_LOG_TRUNCATE			(1 << 17)
 #define BTRFS_ACID_LOG_PERMISSION		(1 << 18)
 #define BTRFS_ACID_LOG_MMAP				(1 << 19)
+#else
+#define BTRFS_ACID_LOG_READ				1
+#define BTRFS_ACID_LOG_WRITE			2
+#define BTRFS_ACID_LOG_ATTR_GET			3
+#define BTRFS_ACID_LOG_ATTR_SET			4
+#define BTRFS_ACID_LOG_READDIR			5
+#define BTRFS_ACID_LOG_CREATE			6
+#define BTRFS_ACID_LOG_UNLINK			7
+#define BTRFS_ACID_LOG_LINK				8
+#define BTRFS_ACID_LOG_MKDIR			9
+#define BTRFS_ACID_LOG_RMDIR			10
+#define BTRFS_ACID_LOG_RENAME			11
+#define BTRFS_ACID_LOG_SYMLINK			12
+#define BTRFS_ACID_LOG_MKNOD			13
+#define BTRFS_ACID_LOG_XATTR_SET		14
+#define BTRFS_ACID_LOG_XATTR_GET		15
+#define BTRFS_ACID_LOG_XATTR_LIST		16
+#define BTRFS_ACID_LOG_XATTR_REMOVE		17
+#define BTRFS_ACID_LOG_TRUNCATE			18
+#define BTRFS_ACID_LOG_PERMISSION		19
+#define BTRFS_ACID_LOG_MMAP				20
+#endif
 
+
+/**
+ * btrfs_acid_log_file - keep a parent's and the inode's location and name.
+ *
+ * Of those operations logging names and locations, all of them, in some form
+ * and shape, log these fields. We're just making it easier to access them in
+ * a predefined way.
+ */
+struct btrfs_acid_log_file
+{
+	struct btrfs_key parent_location;
+	struct btrfs_key location;
+	struct qstr name;
+};
 
 struct btrfs_acid_log_entry
 {
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+#if 0
 	struct btrfs_key location;
 	u64 clock;
-	u32 type;
-	size_t size;
+	u16 type;
 	u64 dirid;
-	void * data;
+	/* only applicable to those operations requiring to know
+	 * how many nlinks an inode has.
+	 */
+	unsigned int nlink;
 
 	struct list_head list;
+
+	size_t size;
+	void * data;
+#endif
 };
 
 struct btrfs_acid_log_rw
 {
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
 	pgoff_t first_page;
 	pgoff_t last_page;
+	unsigned int nlink;
 };
 
-struct btrfs_acid_log_attr_rw
+struct btrfs_acid_log_attr
 {
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
+	unsigned long flags;
+#if 0
 	struct btrfs_key location;
 	struct qstr name;
-	unsigned long flags;
+#endif
 };
 
 struct btrfs_acid_log_create
 {
-	/* created inode location */
-	struct btrfs_key location;
-	struct qstr name;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
 	int mode;
 };
 
 struct btrfs_acid_log_unlink
 {
-	/* unlinked inode location */
-	struct btrfs_key location;
-	struct qstr name;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
+	unsigned int nlink;
 };
 
 struct btrfs_acid_log_link
 {
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file old_file;
+	struct btrfs_acid_log_file new_file;
+	unsigned int nlink;
+
 	/* original inode location */
-	struct btrfs_key old_location;
-	struct qstr old_name;
-	/* new inode location */
-	struct btrfs_key new_location;
-	struct qstr new_name;
+//	struct btrfs_key old_location;
+//	struct qstr old_name;
+//	/* new inode location */
+//	struct btrfs_key new_location;
+//	struct qstr new_name;
 };
 
 struct btrfs_acid_log_mkdir
 {
 	/* created dentry's inode location */
-	struct btrfs_key location;
-	/* created dentry's name */
-	struct qstr name;
+//	struct btrfs_key location;
+//	/* created dentry's name */
+//	struct qstr name;
+
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
 	int mode;
 };
 
 struct btrfs_acid_log_rmdir
 {
 	/* removed dentry's inode location */
-	struct btrfs_key location;
-	/* removed dentry's name */
-	struct qstr name;
+//	struct btrfs_key location;
+//	/* removed dentry's name */
+//	struct qstr name;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
+};
+
+struct btrfs_acid_log_readdir
+{
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
 };
 
 struct btrfs_acid_log_rename
 {
 	/* old inode's parent location before being renamed */
-	struct btrfs_key old_location;
-	/* old name before being renamed */
-	struct qstr old_name;
-	/* new inode's parent location after being renamed */
-	struct btrfs_key new_location;
-	/* new name after being renamed */
-	struct qstr new_name;
+//	struct btrfs_key old_location;
+//	/* old name before being renamed */
+//	struct qstr old_name;
+//	/* new inode's parent location after being renamed */
+//	struct btrfs_key new_location;
+//	/* new name after being renamed */
+//	struct qstr new_name;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file old_file;
+	struct btrfs_acid_log_file new_file;
+	unsigned int nlink;
+
+	struct btrfs_acid_log_file * unlinked_file;
+	unsigned int unlinked_file_nlink;
 };
 
 struct btrfs_acid_log_symlink
 {
 	/* new symlink inode's parent location */
-	struct btrfs_key parent_location;
-	/* new symlink's name */
-	struct qstr name;
-	/* new symlink inode's location */
-	struct btrfs_key location;
+//	struct btrfs_key parent_location;
+//	/* new symlink's name */
+//	struct qstr name;
+//	/* new symlink inode's location */
+//	struct btrfs_key location;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
 	/* name the symlink points to */
 	struct qstr symname;
 };
 
 struct btrfs_acid_log_mknod
 {
-	struct btrfs_key parent_location;
-	struct qstr name;
-	struct btrfs_key location;
+//	struct btrfs_key parent_location;
+//	struct qstr name;
+//	struct btrfs_key location;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
 	int mode;
 	dev_t rdev;
 };
 
 struct btrfs_acid_log_xattr
 {
-	struct qstr name;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	struct btrfs_acid_log_file file;
+#if 0
 	struct btrfs_key location;
+	struct qstr name;
+#endif
 	struct qstr attr_name;
 	void * value;
 	size_t size;
@@ -156,36 +290,79 @@ struct btrfs_acid_log_xattr
 
 struct btrfs_acid_log_truncate
 {
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
 	struct btrfs_key location;
 	loff_t size;
 };
 
 struct btrfs_acid_log_permission
 {
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
 	struct btrfs_key location;
 	int mask;
 };
 
 struct btrfs_acid_log_mmap
 {
-	struct btrfs_key location;
-	struct qstr name;
+	struct list_head list;
+	u64 clock;
+	u64 ino;
+	u16 type;
+
+	/* analogous to btrfs_acid_log_rw */
+	struct btrfs_acid_log_file file;
+	pgoff_t first_page;
+	pgoff_t last_page;
+
+//	struct btrfs_key location;
+//	struct qstr name;
 
 	pgprot_t prot;
 	unsigned long flags;
 
-	struct btrfs_acid_log_rw pages;
 //	pgoff_t first_page;
 //	pgoff_t last_page;
 };
 
-int btrfs_acid_log_read(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location, pgoff_t first, pgoff_t last);
-int btrfs_acid_log_write(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location, pgoff_t first, pgoff_t last);
+/**
+ * struct btrfs_acid_log_cr_inode - Holds a inode value in a list.
+ *
+ * This may very well be overkill, but it is useful and we have no idea on how
+ * to do this in a simpler way.
+ */
+struct btrfs_acid_log_cr_inode {
+	u64 ino;
+	struct list_head list;
+};
+
+/**
+ * struct btrfs_acid_log_cr_entry - Maps a log entry on both CR-log lists.
+ */
+struct btrfs_acid_log_cr_entry {
+	struct btrfs_acid_log_entry * entry;
+	/* marks if the inode being operated on is from the original txsv */
+	int original_inode;
+
+	struct list_head inode_list;
+	struct list_head parent_list;
+};
+
+int btrfs_acid_log_read(struct btrfs_inode * parent, struct btrfs_inode * inode,
+		struct qstr * name, pgoff_t first, pgoff_t last);
+int btrfs_acid_log_write(struct btrfs_inode * parent,
+		struct btrfs_inode * inode, struct qstr * name,
+		pgoff_t first, pgoff_t last);
 //int btrfs_acid_log_getattr(struct inode * inode);
 int btrfs_acid_log_getattr(struct dentry * dentry);
-int btrfs_acid_log_readdir(struct inode * inode);
+int btrfs_acid_log_readdir(struct file * filp);
 int btrfs_acid_log_create(struct inode * dir, struct dentry * dentry, int mode);
 int btrfs_acid_log_unlink(struct inode * dir, struct dentry * dentry);
 int btrfs_acid_log_link(struct dentry * old_dentry, struct inode * dir,
@@ -210,6 +387,10 @@ int btrfs_acid_log_permission(struct inode * inode, int mask);
 int btrfs_acid_log_mmap(struct file * filp, struct vm_area_struct * vma);
 int btrfs_acid_log_page_mkwrite(struct vm_area_struct * vma,
 		struct vm_fault * vmf);
+
+
+void btrfs_acid_log_cr_print(struct btrfs_acid_snapshot * snap);
+void btrfs_acid_log_ops_print(struct btrfs_acid_snapshot * snap);
 
 static inline void __clone_keys(struct btrfs_key * dst, struct btrfs_key * src)
 {
