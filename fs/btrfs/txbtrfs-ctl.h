@@ -30,10 +30,32 @@ struct btrfs_acid_ctl
 	struct rw_semaphore sv_sem;
 	struct btrfs_acid_snapshot * sv;
 
+	/* Currently, we don't think this list need to be under concurrency control
+	 * because it is only accessed during the commit phase, which is already
+	 * protected by commit_mutex. If at any point in time we decide to
+	 * parallelize the commit phase, we will need to define a semaphore.
+	 */
+	struct list_head historic_sv;
+	/* Instead of removing the TxSv's right away after commit, add them to the
+	 * removal_sv_list for later removal. This will allow us to avoid adding
+	 * an extra cost to the commit phase. Any kthread used to process this list
+	 * should never run if a commit is in progress (by trying 'commit_mutex').
+	 */
+	struct list_head removal_sv_list;
+
 	struct rw_semaphore curr_snaps_sem;
 	struct radix_tree_root current_snapshots;
 
 	atomic_t clock;
+	struct mutex commit_mutex;
+
+	atomic_t gen;
+};
+
+struct btrfs_acid_snapshot_entry
+{
+	struct btrfs_acid_snapshot * snap;
+	struct list_head list;
 };
 
 

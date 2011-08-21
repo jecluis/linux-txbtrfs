@@ -60,7 +60,6 @@ struct btrfs_acid_snapshot
 	struct btrfs_key src_location;
 	struct qstr path;
 	unsigned long long hash;
-	u64 gen;
 	pid_t owner_pid;
 	struct timespec start_time;
 
@@ -75,7 +74,9 @@ struct btrfs_acid_snapshot
 	int dead:1;
 	int committed:1;
 
+	atomic_t gen;
 	atomic_t clock;
+	atomic_t active_snaps;
 
 #if 0
 	// read-set

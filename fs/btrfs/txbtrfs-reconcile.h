@@ -20,7 +20,7 @@
 
 struct btrfs_acid_snapshot;
 
-int btrfs_acid_reconcile(struct btrfs_acid_snapshot * txsv,
-		struct btrfs_acid_snapshot * snap);
+int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
+		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap);
 
 #endif /* __BTRFS_TXBTRFS_RECONCILE__ */

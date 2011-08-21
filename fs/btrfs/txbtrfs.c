@@ -39,11 +39,6 @@
 #include "hash.h"
 #include "xattr.h"
 
-struct snapshot_list
-{
-	struct btrfs_acid_snapshot * snap;
-	struct list_head list;
-};
 
 struct txsv_cleanup_list
 {
@@ -51,7 +46,6 @@ struct txsv_cleanup_list
 	struct btrfs_acid_snapshot * root;
 	struct list_head list;
 };
-
 
 
 /*
@@ -69,10 +63,11 @@ __snapshot_instantiate_dentry(struct dentry * dentry);
 static int __snapshot_logs_init_cr(struct btrfs_acid_cr_log * crl);
 static int __snapshot_logs_init(struct btrfs_acid_snapshot * snap);
 static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
-		struct qstr * path, struct inode * parent);
+		struct qstr * path, struct inode * parent,
+		struct btrfs_acid_snapshot * src_sv);
 static int __snapshot_remove_pid(struct btrfs_acid_ctl * ctl, pid_t pid);
 static int __snapshot_remove(struct btrfs_acid_snapshot * snap);
-static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
+static int __snapshot_create_path(struct btrfs_acid_snapshot * sv,
 		struct qstr * path, pid_t pid);
 static void __snapshot_destroy_path(struct qstr * path);
 static int __txsv_set_root_flags(struct btrfs_trans_handle * trans,
@@ -329,7 +324,9 @@ static struct btrfs_acid_snapshot * __txsv_create(struct btrfs_root * sv,
 	}
 
 	snap->root = sv;
-	snap->gen = sv->root_item.generation;
+//	snap->gen = 0; /* txsv's initial generation is *always* 0 */
+	atomic_set(&snap->gen, 0);
+//	snap->gen = sv->root_item.generation;
 //	snap->location = key;
 	btrfs_acid_copy_key(&snap->location, key);
 	snap->parent_ino = parent_ino;
@@ -340,6 +337,8 @@ static struct btrfs_acid_snapshot * __txsv_create(struct btrfs_root * sv,
 	memcpy((void *) snap->path.name, (void *) name, name_len);
 
 	__snapshot_logs_init(snap);
+	atomic_set(&snap->active_snaps, 0);
+
 
 	return snap;
 }
@@ -574,9 +573,9 @@ __cleanup_acid_commit_inconsistencies(struct btrfs_acid_snapshot * tmp,
 	struct btrfs_path * path;
 	struct btrfs_fs_info * fs_info;
 	struct extent_buffer * leaf;
-	struct btrfs_root_ref * ref;
 	struct btrfs_trans_handle * trans;
 	struct btrfs_key snap_item_key;
+	struct btrfs_disk_key dk;
 	int ret = 0;
 
 	int slot, found;
@@ -643,7 +642,6 @@ __cleanup_acid_commit_inconsistencies(struct btrfs_acid_snapshot * tmp,
 			slot = path->slots[0];
 		}
 
-		struct btrfs_disk_key dk;
 		btrfs_item_key(leaf, &dk, slot);
 		btrfs_item_key_to_cpu(leaf, &snap_item_key, slot);
 
@@ -829,7 +827,7 @@ static int __cleanup_acid_subvol_fallback(struct btrfs_root * root,
 
 	ret = btrfs_delete_tx_subvol_item(trans, root, bak);
 	WARN_ON(ret < 0);
-out:
+
 	ret = btrfs_end_transaction(trans, root);
 	BUG_ON(ret);
 	return 0;
@@ -868,19 +866,8 @@ static struct btrfs_acid_snapshot *
 __cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
 {
 	int ret = 0;
-	struct btrfs_root * sv = NULL;
-	struct btrfs_path * path;
-	struct btrfs_key location;
-	struct btrfs_key found_key;
-	struct btrfs_disk_key disk_key;
-	struct extent_buffer * leaf;
 
-	struct btrfs_acid_tx_subvol_item * ti;
-	struct btrfs_disk_key txsv_disk_key;
 	struct btrfs_key * txsv_key, * txsv_old_key;
-	unsigned long txsv_parent_ino;
-	int txsv_name_len;
-	char * txsv_name;
 
 	struct list_head found_subvols;
 	struct list_head potentially_old_subvols;
@@ -892,7 +879,6 @@ __cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
 	struct btrfs_trans_handle * trans;
 
 	struct btrfs_acid_snapshot * txsv = NULL;
-	int slot;
 
 
 	INIT_LIST_HEAD(&found_subvols);
@@ -1082,7 +1068,6 @@ okay:
 		__cleanup_txsv_entry_destroy(new_entry);
 	}
 
-out:
 	return txsv;
 }
 
@@ -1206,9 +1191,15 @@ loop_again:
 		BTRFS_SUB_DBG(TX, "Last key found is a Transactional Subvolume.\n");
 		BTRFS_SUB_DBG(TX, "TXSV: root %p key [%llu %d %llu] gen %llu\n",
 				txsv->root, txsv->location.objectid, txsv->location.type,
-				txsv->location.offset, (unsigned long long) txsv->gen);
+				txsv->location.offset,
+//				(unsigned long long) txsv->gen);
+				(unsigned long long) atomic_read(&txsv->gen));
 		BTRFS_SUB_DBG(TX, "TXSV: parent ino: %llu name: %.*s\n",
 				txsv->parent_ino, txsv->path.len, txsv->path.name);
+
+		/* set sv's snapshot -- this could be done in __txsv_create, but we
+		 * believe it is more appropriate in here. */
+		sv->snap = txsv;
 
 	}
 	else
@@ -1580,6 +1571,12 @@ int btrfs_acid_tx_start(struct file * file)
 	struct btrfs_acid_snapshot * snap = NULL;
 	pid_t curr_pid = current->pid;
 	int usage_count;
+	int is_subvol = 0;
+
+	if (!file) {
+		BTRFS_SUB_DBG(TX_START, "NULL 'file' parameter!\n");
+		return -EINVAL;
+	}
 
 	sv_dentry = dget(fdentry(file));
 
@@ -1599,9 +1596,11 @@ int btrfs_acid_tx_start(struct file * file)
 	 */
 	root = BTRFS_I(sv_dentry->d_inode)->root;
 
+	is_subvol = btrfs_is_acid_subvol(root);
+
 	/* check if we have a transactional parent.
 	 * If not, return -EPERM; otherwise, return success. */
-	if (root->snap) {
+	if (root->snap && !is_subvol) {
 		if (!btrfs_has_acid_ancestor(&root->fs_info->acid_ctl, get_current())) {
 			ret = -EPERM;
 			goto out_err;
@@ -1609,7 +1608,7 @@ int btrfs_acid_tx_start(struct file * file)
 		goto out;
 	}
 
-	if (!btrfs_is_acid_subvol(root))
+	if (!is_subvol)
 	{
 		ret = -EINVAL;
 		goto out_err;
@@ -1658,9 +1657,9 @@ out_err:
  */
 static void __commit_print_sets(struct btrfs_acid_snapshot * snap)
 {
-	u64 mem_footprint = 0;
-	struct btrfs_acid_log_entry * entry;
-	struct list_head * head;
+//	u64 mem_footprint = 0;
+//	struct btrfs_acid_log_entry * entry;
+//	struct list_head * head;
 
 	if (!snap) {
 		BTRFS_SUB_DBG(TX_COMMIT, "SNAP == NULL !!");
@@ -2513,8 +2512,9 @@ int btrfs_acid_tx_commit(struct file * file)
 	struct dentry * parent_dentry;
 	struct inode * parent_inode;
 
-	BTRFS_SUB_DBG(TX_COMMIT, "Attempting Commit on %s for PID = %d\n",
-			file->f_path.dentry, get_current()->pid);
+	BTRFS_SUB_DBG(TX_COMMIT, "Attempting Commit on %.*s for PID = %d\n",
+			file->f_path.dentry->d_name.len, file->f_path.dentry->d_name.name,
+			get_current()->pid);
 
 	if (!file) {
 		BTRFS_SUB_DBG(TX_COMMIT, "file == NULL\n");
@@ -2557,6 +2557,9 @@ int btrfs_acid_tx_commit(struct file * file)
 
 	if (!atomic_dec_and_test(&snap->usage_count))
 		goto out;
+
+	/* Only one transaction may commit at a time */
+	mutex_lock(&ctl->commit_mutex);
 
 	__commit_print_sets(snap);
 #if 0
@@ -2622,7 +2625,7 @@ int btrfs_acid_tx_commit(struct file * file)
 	 * effectively copied from the Master Copy to the Snapshot.
 	 */
 	down_read(&ctl->sv_sem);
-	ret = btrfs_acid_reconcile(ctl->sv, snap);
+	ret = btrfs_acid_reconcile(ctl, ctl->sv, snap);
 	up_read(&ctl->sv_sem);
 	if (ret < 0) {
 		BTRFS_SUB_DBG(TX_COMMIT, "RECONCILIATION FAILED (%s)!\n",
@@ -2655,6 +2658,8 @@ int btrfs_acid_tx_commit(struct file * file)
 	}
 #endif
 
+out_unlock:
+	mutex_unlock(&ctl->commit_mutex);
 out:
 	dput(sv_dentry);
 	dput(parent_dentry);
@@ -2666,7 +2671,41 @@ out:
 
 err_cleanup:
 	/* cleanup snapshots */
-	goto out;
+	goto out_unlock;
+}
+
+
+static int __txsv_mark_into(struct btrfs_acid_snapshot * txsv,
+		struct list_head * lst)
+{
+	struct btrfs_acid_snapshot_entry * entry;
+
+	if (!txsv || !lst)
+		return -EINVAL;
+
+	entry = kzalloc(sizeof(*entry), GFP_NOFS);
+	if (!entry)
+		return -ENOMEM;
+
+	entry->snap = txsv;
+	list_add_tail(&entry->list, lst);
+	return 0;
+}
+
+static int __txsv_mark_removal(struct btrfs_acid_ctl * ctl,
+		struct btrfs_acid_snapshot * txsv)
+{
+	if (!ctl || !txsv)
+		return -EINVAL;
+	return __txsv_mark_into(txsv, &ctl->removal_sv_list);
+}
+
+static int __txsv_mark_historic(struct btrfs_acid_ctl * ctl,
+		struct btrfs_acid_snapshot * txsv)
+{
+	if (!ctl || !txsv)
+		return -EINVAL;
+	return __txsv_mark_into(txsv, &ctl->historic_sv);
 }
 
 //#if 0
@@ -2681,8 +2720,9 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	struct btrfs_trans_handle * trans;
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_fs_info * fs_info;
-	u64 root_objectid;
-	int err, ret = 0;
+//	u64 root_objectid;
+//	int err;
+	int ret = 0;
 
 	struct inode * txsv_inode;
 	struct btrfs_root * parent_root;
@@ -2695,7 +2735,7 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	int txsv_gen_len, i;
 	struct qstr txsv_bak_qstr;
 
-	struct dentry * snap_dentry;
+//	struct dentry * snap_dentry;
 
 	if (!snap || !parent_inode || !snap_inode)
 		return -EINVAL;
@@ -2717,7 +2757,8 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	/* It is viable to use __snapshot_create_path for this, although it should
 	 * suffer some tuning.
 	 */
-	txsv_initial_gen = i = txsv->root->root_key.offset;
+//	txsv_initial_gen = i = txsv->root->root_key.offset;
+	txsv_initial_gen = i = atomic_read(&txsv->gen);
 	if (!i) i ++;
 	for (txsv_gen_len = 0; i; i /= 10, txsv_gen_len ++);
 	txsv_bak_name_len = txsv->path.len + 1 + txsv_gen_len;
@@ -2831,7 +2872,23 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 	ret = btrfs_end_transaction(trans, fs_info->tree_root);
 	BUG_ON(ret);
 
-	/* what should we do to the current TxSv snapshot struct instance? */
+//	atomic_inc(&snap->gen);
+	atomic_set(&snap->gen, atomic_add_return(1, &ctl->gen));
+
+	/* XXX: add sv to historic */
+
+	/* Q: what should we do to the current TxSv snapshot struct instance? */
+	/* A: add it to the 'historic_sv' list in acid_ctl for validation and
+	 * reconciliation of running transactions (iif, sv->active_snaps > 0,
+	 * otherwise mark it for removal). */
+#if 0
+	// we haven't completely thought this through...
+	if (!atomic_read(&txsv->active_snaps))
+		__txsv_mark_removal(ctl, txsv);
+	else
+		__txsv_mark_historic(ctl, txsv);
+#endif
+	__txsv_mark_historic(ctl, txsv);
 	ctl->sv = snap;
 	ret = __snapshot_remove(snap);
 	if (ret < 0)
@@ -3274,7 +3331,7 @@ static int __acid_root_destroy(struct btrfs_acid_snapshot * snap,
 	BTRFS_SUB_DBG(FS, "location [%llu %d %llu]\n",
 			snap->location.objectid, snap->location.type,
 			snap->location.offset);
-	BTRFS_SUB_DBG(FS, "snap inode = %llu\n", snap_inode->i_ino);
+	BTRFS_SUB_DBG(FS, "snap inode = %lu\n", snap_inode->i_ino);
 
 	if (snap_inode->i_ino != BTRFS_FIRST_FREE_OBJECTID)
 		return -EINVAL;
@@ -3381,15 +3438,29 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	struct btrfs_pending_snapshot * pending;
 	struct btrfs_trans_handle * trans;
 	struct btrfs_acid_snapshot * snap = NULL;
+	struct btrfs_acid_snapshot * txsv;
 	struct btrfs_acid_ctl * ctl;
 	struct qstr snap_path;
-	struct dentry * snap_dentry;
+	struct dentry * snap_dentry, * txsv_dentry_parent;
 	struct inode * dir;
 	int ret = 0;
 
 	src_root = BTRFS_I(txsv_dentry->d_inode)->root;
 	ctl = &src_root->fs_info->acid_ctl;
 	dir = txsv_dentry->d_parent->d_inode;
+	txsv = src_root->snap;
+	txsv_dentry_parent = txsv_dentry->d_parent;
+
+	/* Mark the 'soon-to-be' snapshot as already active. This will avoid a
+	 * scenario on which the TxSv we're snapshotting from is removed due to
+	 * the absence of active snapshots.
+	 * There is still room for this whole thing to crash and burn though, but
+	 * we can't think of a better solution while guaranteeing the creation of
+	 * a new snapshot does not depend on finishing the commit of a concurrent
+	 * transaction.
+	 */
+	BTRFS_SUB_DBG(FS, "Creating snapshot using txsv: %p\n", txsv);
+	atomic_inc(&txsv->active_snaps);
 
 	BTRFS_SUB_DBG(FS, "Creating Snapshot for PID = %d\n",
 			current->pid);
@@ -3405,16 +3476,23 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	 * 'create_snapshot()', in ioctl.c, just doesn't down it at all, therefore
 	 * we're doing pretty much the same. */
 //	down_read(&src_root->fs_info->subvol_sem);
+//	__snapshot_create_path(ctl, &snap_path, current->pid);
 
-	__snapshot_create_path(ctl, &snap_path, current->pid);
+	/* This may force us to block for a transaction in the middle of a commit.*/
+	down_read(&ctl->sv_sem);
+	__snapshot_create_path(txsv, &snap_path, current->pid);
 	BTRFS_SUB_DBG(FS,
 			"Snapshot path: name = %.*s, len = %d, hash = %d\n",
 			snap_path.len, snap_path.name, snap_path.len, snap_path.hash);
+	up_read(&ctl->sv_sem);
 
+	// we believe this should be the first line in this method, but let us
+	// play along for a little while longer. Maybe our past-selves knew what
+	// they were doing.
 	mutex_lock_nested(&dir->i_mutex, I_MUTEX_PARENT);
 
 	pending->dentry = lookup_one_len(snap_path.name,
-			txsv_dentry->d_parent, snap_path.len);
+			txsv_dentry_parent, snap_path.len);
 	if (IS_ERR(pending->dentry))
 	{
 		snap = ERR_CAST(pending->dentry);
@@ -3467,7 +3545,7 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 	 */
 
 	/* Adds the snapshot to the snapshot's tree */
-	snap = __snapshot_add(pending->snap, &snap_path, dir);
+	snap = __snapshot_add(pending->snap, &snap_path, dir, txsv);
 	if (!snap || IS_ERR(snap))
 	{
 		BTRFS_SUB_DBG(FS,
@@ -3480,12 +3558,19 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 			pending->snap->root_key.type,
 			pending->snap->root_key.offset);
 
+#if 0
 	/* The snapshot's key offset is equal to the generation of the subvolume
 	 * from where the snapshot was taken, when the snapshot was created.
 	 * Therefore, we take it as the snapshot's initial generation for
 	 * validation purposes.
 	 */
 	snap->gen = snap->root->root_key.offset;
+#endif
+	/* The snapshot's generation will be equal to the generation of the TxSv
+	 * the snapshot originated from. This value is only incremented on commit.
+	 */
+	snap->gen = txsv->gen;
+
 
 	/* From this point forward, whenever we have an error we *have* to remove
 	 * the snapshot from the 'current_snapshots' tree.
@@ -3505,6 +3590,7 @@ btrfs_acid_create_snapshot(struct dentry * txsv_dentry)
 
 	/* initiate usage count atomic_t field */
 	atomic_set(&snap->usage_count, 0);
+	atomic_set(&snap->active_snaps, 0);
 
 
 out_put_dentry:
@@ -3521,6 +3607,10 @@ out_unlock_mutex:
 	kfree(pending);
 out:
 	BTRFS_SUB_DBG(FS, "Returning\n");
+	if (IS_ERR(snap)) {
+		BTRFS_SUB_DBG(FS, "Decreasing active snapshot count at source txsv\n");
+		atomic_dec(&txsv->active_snaps);
+	}
 	return snap;
 
 /* Handle an extraordinary error condition. */
@@ -3594,7 +3684,7 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	struct inode * inode;
 	struct btrfs_inode * sub_inode;
 	struct btrfs_root * sub_root;
-	u64 initial_flags, final_flags;
+//	u64 initial_flags, final_flags;
 	struct btrfs_trans_handle * trans;
 	struct dentry * dentry, * dentry_parent;
 	struct btrfs_acid_snapshot * txsv;
@@ -3725,14 +3815,16 @@ int btrfs_acid_init_cleanup(struct btrfs_fs_info * fs_info)
 	struct btrfs_root * tree_root;
 	struct btrfs_key search_key;
 	struct btrfs_path * path;
-	struct btrfs_trans_handle * trans;
+//	struct btrfs_trans_handle * trans;
 	struct extent_buffer * leaf;
-	struct btrfs_key found_key, snap_key, src_key;
-	struct btrfs_disk_key disk_key, snap_disk_key, src_disk_key;
+	struct btrfs_key found_key;
+//	struct btrfs_key snap_key, src_key;
+	struct btrfs_disk_key disk_key;
+//	struct btrfs_disk_key snap_disk_key, src_disk_key;
 	struct btrfs_acid_snapshot_item * si;
 	struct btrfs_acid_snapshot * snap;
 	struct list_head found_snaps;
-	struct snapshot_list * snap_entry, * tmp_entry;
+	struct btrfs_acid_snapshot_entry * snap_entry, * tmp_entry;
 	int slot, i, total_nodes;
 	int ret = 0, err = 0;
 
@@ -3895,8 +3987,12 @@ int btrfs_acid_init(struct btrfs_fs_info * fs_info)
 
 	init_rwsem(&ctl->sv_sem);
 	init_rwsem(&ctl->curr_snaps_sem);
+	mutex_init(&ctl->commit_mutex);
 
 	INIT_RADIX_TREE(&ctl->current_snapshots, GFP_ATOMIC);
+	INIT_LIST_HEAD(&ctl->historic_sv);
+	INIT_LIST_HEAD(&ctl->removal_sv_list);
+
 	ctl->sv = NULL;
 
 	BTRFS_SUB_DBG(TX, "\n");
@@ -3919,6 +4015,7 @@ int btrfs_acid_init(struct btrfs_fs_info * fs_info)
 #endif
 
 	atomic_set(&ctl->clock, 0);
+	atomic_set(&ctl->gen, 0);
 
 out:
 	return ret;
@@ -4005,9 +4102,9 @@ err_free_path_name:
 	kfree(snap->path.name);
 err_free_src_location:
 //	kfree(snap->src_location);
-err_free_snap_location:
+//err_free_snap_location:
 //	kfree(snap->location);
-err_free_snap:
+//err_free_snap:
 	kfree(snap);
 err:
 	return ERR_PTR(err);
@@ -4128,7 +4225,8 @@ static int __snapshot_logs_init(struct btrfs_acid_snapshot * snap)
  * 		Keep up the good work.
  */
 static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
-		struct qstr * path, struct inode * parent)
+		struct qstr * path, struct inode * parent,
+		struct btrfs_acid_snapshot * src_sv)
 {
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_acid_snapshot * snap;
@@ -4151,11 +4249,14 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 		return ERR_PTR(ret);
 	}
 
-	down_read(&ctl->sv_sem);
-	BUG_ON(__is_null_key(&ctl->sv->location));
-	ret = btrfs_acid_copy_key(&snap->src_location, &ctl->sv->location);
+//	down_read(&ctl->sv_sem);
+//	BUG_ON(__is_null_key(&ctl->sv->location));
+//	ret = btrfs_acid_copy_key(&snap->src_location, &ctl->sv->location);
+//	BUG_ON(ret);
+//	up_read(&ctl->sv_sem);
+	BUG_ON(__is_null_key(&src_sv->location));
+	ret = btrfs_acid_copy_key(&snap->src_location, &src_sv->location);
 	BUG_ON(ret);
-	up_read(&ctl->sv_sem);
 
 	snap->root = root;
 	snap->owner_pid = current->pid;
@@ -4255,7 +4356,7 @@ static int __snapshot_remove(struct btrfs_acid_snapshot * snap)
 out:
 	pid = snap->owner_pid;
 	snap->owner_pid = 0;
-	snap->root->snap = NULL;
+//	snap->root->snap = NULL;
 
 	up_write(&snap->known_pids_sem);
 
@@ -4322,7 +4423,16 @@ out:
 	return ret;
 }
 
-static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
+/**
+ * __snapshot_create_path - Creates a name for a snapshot, based on the
+ * specified TxSv.
+ *
+ * Warning: this method should be called the acid_ctl's 'sv_sem' down'ed (at
+ * least) for read, whenever applicable.
+ */
+//static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
+//		struct qstr * path, pid_t pid)
+static int __snapshot_create_path(struct btrfs_acid_snapshot * sv,
 		struct qstr * path, pid_t pid)
 {
 	int ret = 0;
@@ -4338,10 +4448,10 @@ static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
 	snprintf(tmp_name, 22, "#%d", pid);
 	tmp_name_len = strlen(tmp_name);
 
-	down_read(&ctl->sv_sem);
+//	down_read(&sv_sem);
 	BTRFS_SUB_DBG(FS, "TxSv name = %.*s, len = %d\n",
-			ctl->sv->path.len, ctl->sv->path.name, ctl->sv->path.len);
-	final_name_len = tmp_name_len + ctl->sv->path.len;
+			sv->path.len, sv->path.name, sv->path.len);
+	final_name_len = tmp_name_len + sv->path.len;
 	final_name = kzalloc(sizeof(*final_name) * final_name_len, GFP_NOFS);
 	if (!final_name)
 	{
@@ -4349,8 +4459,8 @@ static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
 		goto out;
 	}
 
-	memcpy(final_name, ctl->sv->path.name, ctl->sv->path.len);
-	memcpy(final_name+ctl->sv->path.len, tmp_name, tmp_name_len);
+	memcpy(final_name, sv->path.name, sv->path.len);
+	memcpy(final_name + sv->path.len, tmp_name, tmp_name_len);
 
 	BTRFS_SUB_DBG(FS, "Final name = %.*s, len = %d\n",
 			final_name_len, final_name, final_name_len);
@@ -4360,7 +4470,7 @@ static int __snapshot_create_path(struct btrfs_acid_ctl * ctl,
 	path->hash = full_name_hash(path->name, path->len);
 
 out:
-	up_read(&ctl->sv_sem);
+//	up_read(&ctl->sv_sem);
 	return ret;
 }
 
@@ -4505,8 +4615,9 @@ btrfs_acid_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 
 	read = generic_file_aio_read(iocb, iov, nr_segs, pos);
 	if (read == 0) {
-		BTRFS_SUB_DBG(TX, "We just \"read\" 0 bytes. Should we log it?\n");
-		goto out;
+//		BTRFS_SUB_DBG(TX, "We just \"read\" 0 bytes. Should we log it?\n");
+		BTRFS_SUB_DBG(TX, "READ > Logging 0 bytes read\n");
+//		goto out;
 	}
 
 	if (read < 0) {
@@ -4514,18 +4625,16 @@ btrfs_acid_file_aio_read(struct kiocb *iocb, const struct iovec *iov,
 		goto out;
 	}
 
+//	do we need this?
+//	generic_segment_checks(iov, &nr_segs, &count, VERIFY_WRITE);
 	first = (pos >> PAGE_CACHE_SHIFT);
 	last = (pos + __file_iov_count_bytes(iov, nr_segs) - 1) >> PAGE_CACHE_SHIFT;
 
-//	inode = BTRFS_I(f_inode);
-
 	ret = btrfs_acid_log_read(parent, inode, &file_dentry->d_name,
 			first, last);
-//	btrfs_acid_log_read(inode->root->snap, &inode->location, first, last);
 
-	out:
+out:
 	return (!ret ? read : ret);
-
 }
 
 ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
@@ -4539,6 +4648,7 @@ ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
 	struct btrfs_inode * parent, * inode;
 	struct qstr * name;
 	int err;
+	size_t count;
 
 	BTRFS_SUB_DBG(CALL, "");
 
@@ -4567,12 +4677,14 @@ ssize_t btrfs_acid_file_aio_write(struct kiocb *iocb,
 		goto out;
 	}
 
+	generic_segment_checks(iov, &nr_segs, &count, VERIFY_READ);
+	generic_write_checks(iocb->ki_filp, &pos, &count, S_ISBLK(f_inode->i_mode));
 	first = (pos >> PAGE_CACHE_SHIFT);
 	len = __file_iov_count_bytes(iov, nr_segs);
 	last = (pos + len - 1) >> PAGE_CACHE_SHIFT;
 
 	BTRFS_SUB_DBG(TX, "Write: pos = %lld, len = %lu, first = %d, last = %d\n",
-			pos, len, first, last);
+			pos, len, (int) first, (int) last);
 
 //	inode = BTRFS_I(f_inode);
 
@@ -4833,6 +4945,7 @@ out:
 	return ret;
 }
 
+#if 0
 void btrfs_acid_truncate(struct inode * inode)
 {
 	int err;
@@ -4843,6 +4956,7 @@ void btrfs_acid_truncate(struct inode * inode)
 		BTRFS_SUB_DBG(LOG, "TRUNCATE logging returned an error\n");
 
 }
+#endif
 
 int btrfs_acid_permission(struct inode * inode, int mask)
 {
@@ -4990,7 +5104,8 @@ const struct address_space_operations btrfs_acid_symlink_aops = {
 };*/
 
 const struct inode_operations btrfs_acid_file_inode_operations = {
-	.truncate	= btrfs_acid_truncate,
+//	.truncate	= btrfs_acid_truncate,
+	.truncate	= btrfs_truncate,
 	.getattr	= btrfs_acid_getattr,
 	.setattr	= btrfs_acid_setattr,
 	.setxattr	= btrfs_acid_setxattr,

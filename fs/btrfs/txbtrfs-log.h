@@ -295,8 +295,10 @@ struct btrfs_acid_log_truncate
 	u64 ino;
 	u16 type;
 
-	struct btrfs_key location;
-	loff_t size;
+	struct btrfs_acid_log_file file;
+//	struct btrfs_key location;
+//	loff_t size;
+	pgoff_t from;
 };
 
 struct btrfs_acid_log_permission
@@ -354,6 +356,8 @@ struct btrfs_acid_log_cr_entry {
 	struct list_head inode_list;
 	struct list_head parent_list;
 };
+
+char * btrfs_acid_log_type_to_str(u16 type);
 
 int btrfs_acid_log_read(struct btrfs_inode * parent, struct btrfs_inode * inode,
 		struct qstr * name, pgoff_t first, pgoff_t last);

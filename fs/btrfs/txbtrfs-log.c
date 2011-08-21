@@ -32,7 +32,8 @@ __log_create_mmap(struct btrfs_inode * parent, struct btrfs_inode * inode,
 static struct btrfs_acid_log_permission *
 __log_create_permission(struct btrfs_key * location, int mask);
 static struct btrfs_acid_log_truncate *
-__log_create_truncate(struct btrfs_key * location, loff_t size);
+__log_create_truncate(struct btrfs_inode * parent, struct btrfs_inode * inode,
+		struct qstr * name, loff_t size);
 static struct btrfs_acid_log_xattr *
 __log_create_xattr(struct btrfs_inode * parent, struct btrfs_inode * inode,
 		struct qstr * name,
@@ -133,7 +134,7 @@ static char * type_to_str[] = {
 		"MMAP",			/* 20 */
 };
 
-static char * __log_type_to_str(u16 type)
+char * btrfs_acid_log_type_to_str(u16 type)
 {
 	return type_to_str[type-1];
 }
@@ -892,9 +893,11 @@ int btrfs_acid_log_symlink(struct inode * dir, struct dentry * dentry,
 int btrfs_acid_log_setattr(struct dentry * dentry, struct iattr * attr)
 {
 //	struct btrfs_acid_log_entry * log_entry;
-	struct btrfs_acid_log_attr * log_attr;
+//	struct btrfs_acid_log_attr * log_attr;
+	void * log_entry;
 	struct btrfs_inode * parent, * inode;
 	struct qstr * name;
+	u16 op_type = BTRFS_ACID_LOG_ATTR_SET;
 	int err;
 
 	if (!dentry || !dentry->d_inode || !attr)
@@ -904,14 +907,22 @@ int btrfs_acid_log_setattr(struct dentry * dentry, struct iattr * attr)
 	inode = BTRFS_I(dentry->d_inode);
 	name = &dentry->d_name;
 
-	log_attr = __log_create_attr(parent, inode, name, attr->ia_valid);
-	if (IS_ERR(log_attr))
-		return PTR_ERR(log_attr);
+	if (attr->ia_valid & ATTR_SIZE) { /* file size changed; log as truncate. */
+		BTRFS_SUB_DBG(LOG, "SET INODE SIZE > attr: %u, ino: %lu, size: %u\n",
+				(unsigned int) attr->ia_size, dentry->d_inode->i_ino,
+				(unsigned int) dentry->d_inode->i_size);
+		log_entry = __log_create_truncate(parent, inode, name, attr->ia_size);
+		op_type = BTRFS_ACID_LOG_TRUNCATE;
+	} else
+		log_entry = __log_create_attr(parent, inode, name, attr->ia_valid);
 
-	err = __log_op_add(inode->root->snap, log_attr, inode->location.objectid,
-			BTRFS_ACID_LOG_ATTR_SET);
+	if (IS_ERR(log_entry))
+		return PTR_ERR(log_entry);
+
+	err = __log_op_add(inode->root->snap, log_entry, inode->location.objectid,
+			op_type);
 	if (err < 0) {
-		__log_destroy_attr(log_attr);
+		__log_destroy_attr(log_entry);
 		return err;
 	}
 
@@ -1187,6 +1198,7 @@ int btrfs_acid_log_removexattr(struct dentry * dentry, const char * name)
 	return 0;
 }
 
+#if 0
 int btrfs_acid_log_truncate(struct inode * inode)
 {
 //	struct btrfs_acid_log_entry * log_entry;
@@ -1225,6 +1237,7 @@ int btrfs_acid_log_truncate(struct inode * inode)
 
 	return 0;
 }
+#endif
 
 int btrfs_acid_log_permission(struct inode * inode, int mask)
 {
@@ -1389,7 +1402,7 @@ void btrfs_acid_log_ops_print(struct btrfs_acid_snapshot * snap)
 	head = &snap->op_log;
 	list_for_each_entry(entry, head, list) {
 		BTRFS_SUB_DBG(LOG, "clock: %llu, ino: %llu, type: %s\n",
-				entry->clock, entry->ino, __log_type_to_str(entry->type));
+				entry->clock, entry->ino, btrfs_acid_log_type_to_str(entry->type));
 	}
 	BTRFS_SUB_DBG(LOG, "----------------------------------------------\n");
 
@@ -1723,26 +1736,39 @@ static void __log_destroy_permission(struct btrfs_acid_log_permission * entry)
 
 
 static struct btrfs_acid_log_truncate *
-__log_create_truncate(struct btrfs_key * location, loff_t size)
+__log_create_truncate(struct btrfs_inode * parent, struct btrfs_inode * inode,
+		struct qstr * name, loff_t size)
 {
 	struct btrfs_acid_log_truncate * entry;
+	int err;
 
-	if (!location)
+	if (!parent || !inode || !name)
 		return ERR_PTR(-EINVAL);
 
 	entry = kzalloc(sizeof(*entry), GFP_NOFS);
 	if (!entry)
 		return ERR_PTR(-ENOMEM);
 
-	__clone_keys(&entry->location, location);
-	entry->size = size;
+
+	err = __log_create_file(&entry->file, &parent->location,
+			&inode->location, name);
+	if (err < 0) {
+		kfree(entry);
+		return ERR_PTR(err);
+	}
+
+//	__clone_keys(&entry->location, location);
+//	entry->size = size;
+	entry->from = size >> PAGE_CACHE_SHIFT;
 
 	return entry;
 }
 static void __log_destroy_truncate(struct btrfs_acid_log_truncate * entry)
 {
-	if (entry)
+	if (entry) {
+		__log_destroy_file(&entry->file);
 		kfree(entry);
+	}
 }
 
 /* 'attr_name' may be NULL if, and only if, we are logging a 'listxattr' that
@@ -1916,7 +1942,7 @@ __log_create_rename(struct btrfs_inode * old_parent,
 {
 	int err;
 	struct btrfs_acid_log_rename * entry;
-	struct btrfs_key * new_inode_key = NULL;
+//	struct btrfs_key * new_inode_key = NULL;
 
 	if (!old_parent || !old_inode || !old_name
 			|| !new_parent || !new_name)
