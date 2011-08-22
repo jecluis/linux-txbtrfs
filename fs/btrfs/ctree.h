@@ -2675,6 +2675,14 @@ int btrfs_symlink(struct inode *dir, struct dentry *dentry,
 			 const char *symname);
 void btrfs_truncate(struct inode *inode);
 int btrfs_unlink(struct inode *dir, struct dentry *dentry);
+struct inode *btrfs_new_inode(struct btrfs_trans_handle *trans,
+				     struct btrfs_root *root,
+				     struct inode *dir,
+				     const char *name, int name_len,
+				     u64 ref_objectid, u64 objectid,
+				     u64 alloc_hint, int mode, u64 *index);
+int btrfs_init_inode_security(struct btrfs_trans_handle *trans,
+				     struct inode *inode,  struct inode *dir);
 
 /* ioctl.c */
 long btrfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg);

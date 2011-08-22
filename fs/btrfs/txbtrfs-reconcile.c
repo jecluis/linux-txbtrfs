@@ -20,9 +20,12 @@
 #include <linux/rbtree.h>
 #include <linux/pagemap.h>
 #include "ctree.h"
+#include "transaction.h"
+#include "disk-io.h"
 #include "btrfs_inode.h"
 #include "txbtrfs.h"
 #include "txbtrfs-log.h"
+
 
 #ifdef __TXBTRFS_DEBUG__
 
@@ -751,8 +754,10 @@ static int symexec_dirty_dir_put(struct symexec_ctl * symexec, u64 ino)
 	n = __tree_search(&symexec->dirty_dirs, ino);
 	if (IS_ERR(n))
 		return PTR_ERR(n);
-	else if (n != NULL) /* entry exists; nothing to do here. */
+	else if (n != NULL) {
+		/* entry exists; nothing to do here. */
 		goto out;
+	}
 
 	entry = kzalloc(sizeof(*entry), GFP_NOFS);
 	if (!entry)
@@ -957,6 +962,26 @@ static void symexec_print_blocks_tree(struct symexec_ctl * symexec)
 		entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
 		BTRFS_SYM_PRINT("ino: %llu\n", entry->ino);
 		__print_blocks_list(symexec, &entry->list);
+	}
+	BTRFS_SYM_PRINT("----------------------------------------------\n");
+}
+
+static void symexec_print_dirty_dirs_tree(struct symexec_ctl * symexec)
+{
+	struct rb_node * node;
+	struct symexec_tree_entry * entry;
+
+	WARN_ON(!symexec);
+	if (!symexec)
+		return;
+
+	BTRFS_SYM_PRINT("----------------------------------------------\n");
+	BTRFS_SYM_PRINT("  Dirty Dirs Tree (%d)\n",
+			symexec->target_snap->owner_pid);
+
+	for (node = rb_first(&symexec->dirty_dirs); node; node = rb_next(node)) {
+		entry = rb_entry(node, struct symexec_tree_entry, rb_node);
+		BTRFS_SYM_PRINT("ino: %llu\n", entry->ino);
 	}
 	BTRFS_SYM_PRINT("----------------------------------------------\n");
 }
@@ -2056,6 +2081,140 @@ out:
 	return err;
 }
 
+static int symexec_reconcile(struct symexec_ctl * symexec,
+		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap)
+{
+	struct btrfs_fs_info * fs_info;
+	struct rb_node * node;
+	struct symexec_list_tree_entry * lst_entry;
+	struct symexec_entry * entry;
+
+	u64 dir;
+	u64 index;
+	struct btrfs_key parent_key;
+	struct inode * parent_inode;
+	struct inode * inode;
+	struct btrfs_acid_log_mkdir * mkdir_entry;
+	struct btrfs_trans_handle * trans;
+	unsigned long trans_blocks_used;
+
+	int err = 0;
+
+	if (!symexec || !txsv || !snap)
+		return -EINVAL;
+
+	fs_info = snap->root->fs_info;
+
+	for (node = rb_first(&symexec->dir); node; node = rb_next(node)) {
+		lst_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+
+		dir = lst_entry->ino;
+		parent_key.objectid = dir;
+		parent_key.type = BTRFS_INODE_ITEM_KEY;
+		parent_key.offset = 0;
+
+		parent_inode = btrfs_iget(fs_info->sb, &parent_key, snap->root, NULL);
+		if (IS_ERR_OR_NULL(parent_inode)) {
+			BTRFS_SYM_DBG("INODE-GET > parent: %p\n", parent_inode);
+			return (IS_ERR(parent_inode) ? PTR_ERR(parent_inode) : -ENOENT);
+		}
+
+		list_for_each_entry(entry, &lst_entry->list, list) {
+			if (entry->origin != ORIGIN_GLOBAL)
+				continue;
+
+			if (entry->log_entry->type != BTRFS_ACID_LOG_MKDIR)
+				continue;
+
+			trans = btrfs_start_transaction(snap->root, 5);
+			if (IS_ERR(trans)) {
+				BTRFS_SYM_DBG("START-TRANS > Error\n");
+//				return PTR_ERR(trans);
+				err = PTR_ERR(trans);
+				break;
+			}
+			btrfs_set_trans_block_group(trans, parent_inode);
+
+			mkdir_entry = (struct btrfs_acid_log_mkdir *) entry->log_entry;
+#if 0
+			err = btrfs_set_inode_index(parent_inode, &index);
+			if (err < 0) {
+				BTRFS_SYM_DBG("SET-INODE-INDEX > error\n");
+				break;
+			}
+#endif
+
+			BTRFS_SYM_DBG("Creating Dir > name: %.*s, "
+					"ino: %llu, dir: %llu, mode: %d\n",
+					entry->file->name.len, entry->file->name.name,
+					entry->ino, dir, mkdir_entry->mode);
+
+			inode = btrfs_new_inode(trans, snap->root, parent_inode,
+					entry->file->name.name, entry->file->name.len, dir,
+					entry->ino, BTRFS_I(parent_inode)->block_group,
+					(mkdir_entry->mode|S_IFDIR), &index);
+			if (IS_ERR(inode)) {
+				BTRFS_SYM_DBG("NEW-INODE > Error\n");
+//				return PTR_ERR(inode);
+				err = PTR_ERR(inode);
+				break;
+			}
+
+			BTRFS_SYM_DBG("\tmode: %llu, uid: %llu, gid: %llu\n",
+					(int) inode->i_mode, (int) inode->i_uid, (int) inode->i_gid);
+
+#if 0
+			err = btrfs_init_inode_security(trans, inode, dir);
+			if (err) {
+				BTRFS_SYM_DBG("INIT-INODE-SEC > Error\n");
+				break;
+			}
+#endif
+
+			err = btrfs_init_inode_security(trans, inode, parent_inode);
+			if (err < 0)
+				goto out_fail;
+			BTRFS_SYM_DBG("\tAFTER SECURITY > mode: %llu, uid: %llu, gid: %llu\n",
+					(int) inode->i_mode, (int) inode->i_uid, (int) inode->i_gid);
+
+			inode->i_op = &btrfs_acid_dir_inode_operations;
+			inode->i_fop = &btrfs_acid_dir_file_operations;
+			btrfs_set_trans_block_group(trans, inode);
+
+			btrfs_i_size_write(inode, 0);
+			err = btrfs_update_inode(trans, snap->root, inode);
+			if (err < 0)
+				goto out_fail;
+
+			err = btrfs_add_link(trans, parent_inode, inode,
+					entry->file->name.name,	entry->file->name.len, 0, index);
+			if (err < 0) {
+				BTRFS_SYM_DBG("ADD-LINK > Error\n");
+				goto out_fail;
+			}
+
+			btrfs_update_inode_block_group(trans, inode);
+			btrfs_update_inode_block_group(trans, parent_inode);
+
+out_fail:
+			trans_blocks_used = trans->blocks_used;
+			btrfs_end_transaction_throttle(trans, snap->root);
+//			if (err < 0) {
+				iput(inode);
+//			}
+			btrfs_btree_balance_dirty(snap->root, trans_blocks_used);
+			if (err < 0)
+				break;
+		}
+
+		iput(parent_inode);
+		if (err < 0)
+			return err;
+	}
+
+	return 0;
+}
+
 int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap)
 {
@@ -2106,15 +2265,6 @@ apply_txsv:
 		return err;
 	}
 
-#if 0
-	err = symexec_apply(symexec, &snap->op_log);
-	if (err < 0) {
-		BTRFS_SYM_DBG("RECONCILE > error applying snaps's log\n");
-		symexec_destroy(symexec);
-//		return err;
-	}
-#endif
-
 	err = symexec_validate(symexec, snap);
 	if (err < 0) {
 		BTRFS_SYM_DBG("RECONCILE > error validating snapshot\n");
@@ -2124,6 +2274,9 @@ apply_txsv:
 	symexec_print_dir_tree(symexec);
 	symexec_print_rem_tree(symexec);
 	symexec_print_blocks_tree(symexec);
+	symexec_print_dirty_dirs_tree(symexec);
+
+	err = symexec_reconcile(symexec, txsv, snap);
 
 out:
 	symexec_destroy(symexec);

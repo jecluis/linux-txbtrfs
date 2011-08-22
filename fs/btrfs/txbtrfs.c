@@ -4966,9 +4966,11 @@ int btrfs_acid_permission(struct inode * inode, int mask)
 	if (ret < 0)
 		goto out;
 
+#if 0
 	err = btrfs_acid_log_permission(inode, mask);
 	if (err < 0)
 		BTRFS_SUB_DBG(LOG, "PERMISSION logging returned an error\n");
+#endif
 out:
 	return ret;
 }

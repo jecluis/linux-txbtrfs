@@ -90,7 +90,8 @@ static noinline int cow_file_range(struct inode *inode,
 				   u64 start, u64 end, int *page_started,
 				   unsigned long *nr_written, int unlock);
 
-static int btrfs_init_inode_security(struct btrfs_trans_handle *trans,
+/* removed static for use in txbtrfs-reconcile.c */
+int btrfs_init_inode_security(struct btrfs_trans_handle *trans,
 				     struct inode *inode,  struct inode *dir)
 {
 	int err;
@@ -4203,7 +4204,6 @@ struct dentry *btrfs_lookup(struct inode *dir, struct dentry *dentry,
 				   struct nameidata *nd)
 {
 	struct inode *inode;
-	struct dentry * tmp_dentry;
 
 	inode = btrfs_lookup_dentry(dir, dentry);
 	if (IS_ERR(inode))
@@ -4522,7 +4522,8 @@ int btrfs_set_inode_index(struct inode *dir, u64 *index)
 	return ret;
 }
 
-static struct inode *btrfs_new_inode(struct btrfs_trans_handle *trans,
+/* removed static for use in txbtrfs-reconcile.c */
+struct inode *btrfs_new_inode(struct btrfs_trans_handle *trans,
 				     struct btrfs_root *root,
 				     struct inode *dir,
 				     const char *name, int name_len,
