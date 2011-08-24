@@ -25,6 +25,7 @@
 #include "btrfs_inode.h"
 #include "txbtrfs.h"
 #include "txbtrfs-log.h"
+#include "compat.h"
 
 
 #ifdef __TXBTRFS_DEBUG__
@@ -2081,6 +2082,481 @@ out:
 	return err;
 }
 
+static int __symexec_reconcile_mknod(struct btrfs_trans_handle * trans,
+		struct btrfs_acid_snapshot * txsv,
+		struct btrfs_acid_snapshot * snap, struct inode * dir,
+		struct symexec_entry * entry)
+{
+	struct btrfs_acid_log_mknod * mknod_entry;
+	struct inode * inode;
+	struct qstr * name;
+	u64 index;
+	int err;
+	int drop_inode = 0;
+
+	if (!trans || !txsv || !snap || !dir || !entry)
+		return -EINVAL;
+
+	mknod_entry = (struct btrfs_acid_log_mknod *) entry->log_entry;
+	name = &mknod_entry->file.name;
+
+	inode = btrfs_new_inode(trans, snap->root, dir,
+				name->name, name->len, dir->i_ino,
+				entry->ino, BTRFS_I(dir)->block_group,
+				mknod_entry->mode, &index);
+	if (IS_ERR(inode))
+		return PTR_ERR(inode);
+
+	err = btrfs_init_inode_security(trans, inode, dir);
+	if (err < 0) {
+		drop_inode = 1;
+		goto out_unlock;
+	}
+
+	btrfs_set_trans_block_group(trans, inode);
+	err = btrfs_add_link(trans, dir, inode, name->name, name->len, 0, index);
+	if (err) {
+		drop_inode = 1;
+		goto out_unlock;
+	}
+
+	inode->i_op = &btrfs_acid_special_inode_operations;
+	init_special_inode(inode, inode->i_mode, mknod_entry->rdev);
+	btrfs_update_inode(trans, snap->root, inode);
+
+	btrfs_update_inode_block_group(trans, inode);
+	btrfs_update_inode_block_group(trans, dir);
+
+out_unlock:
+	if (drop_inode) {
+		inode_dec_link_count(inode);
+	}
+	iput(inode);
+
+	return err;
+}
+
+
+static int __symexec_reconcile_link(struct btrfs_trans_handle * trans,
+		struct btrfs_acid_snapshot * txsv,
+		struct btrfs_acid_snapshot * snap, struct inode * dir,
+		struct symexec_entry * entry)
+{
+	struct btrfs_acid_log_link * link_entry;
+	struct qstr * name;
+	struct inode * inode;
+	u64 index;
+
+	struct btrfs_key snap_ino_key;
+	int drop_inode = 0;
+
+	int err;
+
+	if (!trans || !txsv || !snap || !dir || !entry)
+		return -EINVAL;
+
+	name = &entry->file->name;
+
+	snap_ino_key.objectid = entry->ino;
+	snap_ino_key.type = BTRFS_INODE_ITEM_KEY;
+	snap_ino_key.offset = 0;
+
+	inode = btrfs_iget(snap->root->fs_info->sb,
+			&snap_ino_key, snap->root, NULL);
+	if (IS_ERR_OR_NULL(inode)) {
+		BTRFS_SYM_DBG("INODE-GET > Error obtaining %llu\n", entry->ino);
+		return PTR_ERR(inode);
+	}
+
+	btrfs_inc_nlink(inode);
+//	atomic_inc(&inode->i_count);
+
+	err = btrfs_set_inode_index(dir, &index);
+	if (err < 0)
+		goto out;
+
+	err = btrfs_add_link(trans, dir, inode, name->name, name->len, 1, index);
+	if (err < 0) {
+		drop_inode = 1;
+		goto out;
+	}
+
+//	struct dentry *parent = dget_parent(dentry);
+	btrfs_update_inode_block_group(trans, dir);
+	err = btrfs_update_inode(trans, snap->root, inode);
+	BUG_ON(err);
+//	btrfs_log_new_name(trans, inode, NULL, parent);
+//	dput(parent);
+
+out:
+	if (drop_inode) {
+		BTRFS_SYM_DBG("DROP INODE > DEC LINK COUNT for ino %llu\n",
+				inode->i_ino);
+		inode_dec_link_count(inode);
+	}
+	iput(inode);
+
+	return err;
+}
+
+
+void btrfs_set_inode_extent_io_ops(struct inode * inode);
+void btrfs_set_inode_aops(struct inode * inode);
+
+
+static int __symexec_reconcile_create(struct btrfs_trans_handle * trans,
+		struct btrfs_acid_snapshot * txsv,
+		struct btrfs_acid_snapshot * snap, struct inode * dir,
+		struct symexec_entry * entry)
+{
+	struct btrfs_acid_log_create * create_entry;
+	struct qstr * name;
+	struct inode * inode;
+	u64 index;
+	int drop_inode = 0;
+
+	struct extent_buffer * leaf;
+	int slot;
+	struct btrfs_path * path;
+	struct btrfs_path * snap_path;
+	char * buf;
+	u32 size;
+	struct btrfs_key item_key;
+	struct btrfs_disk_key disk_key;
+	u64 original_ino;
+	struct btrfs_trans_handle * inner_trans;
+	struct inode * original_inode;
+	struct btrfs_key * original_location;
+	struct btrfs_file_extent_item * ei;
+	u64 item_numbytes, item_bytenr, item_offset;
+	u8 item_type;
+
+	struct btrfs_acid_log_symlink * symlink_entry;
+	int new_inode_mode;
+
+	int err, ret;
+
+	if (!trans || !txsv || !snap || !dir || !entry)
+		return -EINVAL;
+
+	name = &entry->file->name;
+
+	if (entry->log_entry->type == BTRFS_ACID_LOG_CREATE) {
+		create_entry = (struct btrfs_acid_log_create *) entry->log_entry;
+		original_location = &create_entry->file.location;
+//		new_inode_mode = create_entry->mode;
+	} else if (entry->log_entry->type == BTRFS_ACID_LOG_SYMLINK) {
+		symlink_entry = (struct btrfs_acid_log_symlink *) entry->log_entry;
+		original_location = &symlink_entry->file.location;
+	}
+
+	original_inode = btrfs_iget(txsv->root->fs_info->sb,
+//			&create_entry->file.location, txsv->root, NULL);
+			original_location, txsv->root, NULL);
+	if (IS_ERR(original_inode)) {
+		BTRFS_SYM_DBG("INODE-GET > Error\n");
+//		goto out_unlock;
+		return PTR_ERR(original_inode);
+	}
+
+	new_inode_mode = original_inode->i_mode;
+
+	inode = btrfs_new_inode(trans, snap->root, dir,
+			name->name, name->len, dir->i_ino,
+			entry->ino, BTRFS_I(dir)->block_group,
+//			create_entry->mode, &index);
+			new_inode_mode, &index);
+	if (IS_ERR(inode)) {
+		iput(original_inode);
+		return PTR_ERR(inode);
+	}
+
+#if 0
+	original_inode = btrfs_iget(txsv->root->fs_info->sb,
+//			&create_entry->file.location, txsv->root, NULL);
+			original_location, txsv->root, NULL);
+	if (IS_ERR_OR_NULL(original_inode)) {
+		BTRFS_SYM_DBG("INODE-GET > Error\n");
+		goto out_unlock;
+	}
+#endif
+
+	inode_set_bytes(inode, original_inode->i_bytes);
+	btrfs_i_size_write(inode, original_inode->i_size);
+	inode->i_ctime = original_inode->i_ctime;
+	inode->i_mtime = original_inode->i_mtime;
+	inode->i_atime = original_inode->i_atime;
+
+	err = btrfs_init_inode_security(trans, inode, dir);
+	if (err < 0) {
+		drop_inode = 1;
+		goto out_put_original_inode;
+	}
+
+	btrfs_update_inode(trans, snap->root, inode);
+
+	btrfs_set_trans_block_group(trans, inode);
+
+	err = btrfs_add_link(trans, dir, inode, name->name, name->len, 0, index);
+	if (err)
+		drop_inode = 1;
+	else {
+//		inode->i_mapping->a_ops = &btrfs_aops;
+		btrfs_set_inode_aops(inode);
+		btrfs_set_inode_extent_io_ops(inode);
+
+		inode->i_mapping->backing_dev_info = &snap->root->fs_info->bdi;
+//		inode->i_mapping->backing_dev_info = &root->fs_info->bdi;
+//		BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
+
+		inode->i_fop = &btrfs_acid_file_operations;
+		inode->i_op = &btrfs_acid_file_inode_operations;
+	}
+
+	btrfs_update_inode_block_group(trans, inode);
+	btrfs_update_inode_block_group(trans, dir);
+
+out_put_original_inode:
+	iput(original_inode);
+out_unlock:
+	if (drop_inode) {
+		inode_dec_link_count(inode);
+		goto out;
+	}
+
+//	original_ino = create_entry->ino;
+	original_ino = entry->log_entry->ino;
+	BTRFS_SYM_DBG("Taking care of extents for inode %llu -> %llu\n",
+			original_ino, entry->ino);
+	BTRFS_SYM_DBG("OBJECTID > snap root: %llu, txsv root: %llu\n",
+			snap->root->root_key.objectid, txsv->root->root_key.objectid);
+
+	err = -ENOMEM;
+	path = btrfs_alloc_path();
+	if (!path)
+		goto out;
+
+//	snap_path = btrfs_alloc_path();
+//	if (!snap_path) {
+//		btrfs_free_path(path);
+//		goto out;
+//	}
+
+	err = btrfs_lookup_file_extent(NULL, txsv->root, path, original_ino, 0, 0);
+	if (err < 0) {
+		BTRFS_SYM_DBG("LOOKUP-FILE-EXTENT > Error\n");
+		goto out;
+	}
+
+	while (1) {
+		leaf = path->nodes[0];
+		slot = path->slots[0];
+
+		BTRFS_SYM_DBG("\tITEM > leaf: %p, slot: %d, leaf nritems: %d, bytenr: %llu\n",
+				leaf, slot, btrfs_header_nritems(leaf), btrfs_header_bytenr(leaf));
+
+		if (slot >= btrfs_header_nritems(leaf))
+		{
+			ret = btrfs_next_leaf(txsv->root, path);
+			if (ret != 0) /* no more leafs. */
+				break;
+
+			leaf = path->nodes[0];
+			slot = path->slots[0];
+		}
+
+//		btrfs_item_key(leaf, &disk_key, slot);
+//		btrfs_disk_key_to_cpu(&item_key, &disk_key);
+		btrfs_item_key_to_cpu(leaf, &item_key, slot);
+		BTRFS_SYM_DBG("\tITEM FOUND > key: [%llu %d %llu]\n",
+				item_key.objectid, item_key.type, item_key.offset);
+		if (item_key.objectid > original_ino)
+			break;
+
+		if (item_key.objectid != original_ino)
+			continue;
+
+		if (item_key.type != BTRFS_EXTENT_DATA_KEY)
+			continue;
+
+		size = btrfs_item_size_nr(leaf, slot);
+		buf = kzalloc(size, GFP_NOFS);
+		if (!buf) {
+			err = -ENOMEM;
+			break;
+		}
+
+		BTRFS_SYM_DBG("\tEXTENT ITEM > size: %u\n", size);
+		read_extent_buffer(leaf, buf, btrfs_item_ptr_offset(leaf, slot), size);
+		item_type = le8_to_cpu(((struct btrfs_file_extent_item *) buf)->type);
+		BTRFS_SYM_DBG("\tEXTENT ITEM > type: %d, ram: %llu\n",
+				item_type,
+				((struct btrfs_file_extent_item *) buf)->ram_bytes);
+
+		snap_path = btrfs_alloc_path();
+		if (!snap_path) {
+			btrfs_free_path(path);
+			goto out;
+		}
+
+		inner_trans = btrfs_start_transaction(snap->root, 1);
+		BUG_ON(IS_ERR_OR_NULL(inner_trans));
+
+		item_key.objectid = entry->ino;
+		err = btrfs_insert_empty_item(inner_trans, snap->root,
+				snap_path, &item_key, size);
+		BUG_ON(err);
+
+		write_extent_buffer(snap_path->nodes[0], buf,
+				btrfs_item_ptr_offset(snap_path->nodes[0], snap_path->slots[0]),
+				size);
+
+		if ((item_type == BTRFS_FILE_EXTENT_REG)
+				|| (item_type == BTRFS_FILE_EXTENT_PREALLOC)) {
+
+			BTRFS_SYM_DBG("\tEXTENT ITEM > Increasing extent refs\n");
+			ei = (struct btrfs_file_extent_item *) buf;
+			item_bytenr = le64_to_cpu(ei->disk_bytenr);
+			item_numbytes = le64_to_cpu(ei->disk_num_bytes);
+			item_offset = le64_to_cpu(ei->offset);
+			err = btrfs_inc_extent_ref(trans, snap->root,
+					item_bytenr, item_numbytes, 0,
+					snap->root->root_key.objectid,
+					entry->ino,
+					item_offset);
+			if (err < 0) {
+				BTRFS_SYM_DBG("\tEXTENT ITEM > Error increasing extent refs\n");
+			}
+		}
+
+		btrfs_end_transaction(inner_trans, snap->root);
+		btrfs_free_path(snap_path);
+
+
+		kfree(buf);
+
+		path->slots[0] ++;
+	}
+
+out_free_path:
+	btrfs_free_path(path);
+//	btrfs_free_path(snap_path);
+
+out:
+	iput(inode);
+	return err;
+}
+
+
+static int __symexec_reconcile_mkdir(struct btrfs_trans_handle * trans,
+//static int __symexec_reconcile_mkdir(
+		struct btrfs_acid_snapshot * txsv,
+		struct btrfs_acid_snapshot * snap, struct inode * dir,
+		struct symexec_entry * entry)
+{
+//	struct btrfs_trans_handle * trans;
+	struct btrfs_acid_log_mkdir * mkdir_entry;
+	struct qstr * name;
+	struct inode * inode;
+	u64 index;
+//	unsigned long trans_blocks_used;
+
+	int err;
+
+	if (!trans || !txsv || !snap || !dir || !entry)
+		return -EINVAL;
+
+	name = &entry->file->name;
+
+	mkdir_entry = (struct btrfs_acid_log_mkdir *) entry->log_entry;
+
+//	trans = btrfs_start_transaction(snap->root, 5);
+//	if (IS_ERR(trans)) {
+//		BTRFS_SYM_DBG("START-TRANS > Error\n");
+//		err = PTR_ERR(trans);
+////		break;
+//		return err;
+//	}
+//	btrfs_set_trans_block_group(trans, dir);
+
+	BTRFS_SYM_DBG("Creating Dir > name: %.*s, "
+			"ino: %llu, dir: %llu, mode: %d\n",
+			name->len, name->name,
+			entry->ino, dir, mkdir_entry->mode);
+
+	inode = btrfs_new_inode(trans, snap->root, dir,
+			name->name, name->len, dir->i_ino,
+			entry->ino, BTRFS_I(dir)->block_group,
+			(mkdir_entry->mode|S_IFDIR), &index);
+	if (IS_ERR(inode)) {
+		BTRFS_SYM_DBG("NEW-INODE > Error\n");
+		return PTR_ERR(inode);
+	}
+
+	BTRFS_SYM_DBG("\tmode: %llu, uid: %llu, gid: %llu\n",
+			(int) inode->i_mode, (int) inode->i_uid, (int) inode->i_gid);
+
+	err = btrfs_init_inode_security(trans, inode, dir);
+	if (err < 0)
+		goto out_fail;
+	BTRFS_SYM_DBG("\tAFTER SECURITY > mode: %llu, uid: %llu, gid: %llu\n",
+			(int) inode->i_mode, (int) inode->i_uid, (int) inode->i_gid);
+
+	inode->i_op = &btrfs_acid_dir_inode_operations;
+	inode->i_fop = &btrfs_acid_dir_file_operations;
+	btrfs_set_trans_block_group(trans, inode);
+
+	btrfs_i_size_write(inode, 0);
+	err = btrfs_update_inode(trans, snap->root, inode);
+	if (err < 0)
+		goto out_fail;
+
+	err = btrfs_add_link(trans, dir, inode,
+			name->name, name->len, 0, index);
+	if (err < 0) {
+		BTRFS_SYM_DBG("ADD-LINK > Error\n");
+		goto out_fail;
+	}
+
+	btrfs_update_inode_block_group(trans, inode);
+	btrfs_update_inode_block_group(trans, dir);
+
+out_fail:
+	iput(inode);
+//	trans_blocks_used = trans->blocks_used;
+//	btrfs_end_transaction_throttle(trans, snap->root);
+//	btrfs_btree_balance_dirty(snap->root, trans_blocks_used);
+
+	return err;
+}
+
+/**
+ * __symexec_reconcile_trans_numitems - Returns the # items for the transaction.
+ *
+ * This solution isn't pretty, but we are tired and we barely have enough
+ * imagination to write this description, let alone thing how to do this in
+ * a simpler way. Sorry.
+ */
+static int __symexec_reconcile_trans_numitems(struct symexec_entry * entry)
+{
+	int items = 0;
+	if (!entry)
+		return -EINVAL;
+
+	switch (entry->log_entry->type) {
+	case BTRFS_ACID_LOG_CREATE:
+	case BTRFS_ACID_LOG_MKDIR:
+	case BTRFS_ACID_LOG_MKNOD:
+	case BTRFS_ACID_LOG_SYMLINK:
+		items = 5;
+		break;
+	case BTRFS_ACID_LOG_LINK:
+		items = 3;
+		break;
+	}
+	return items;
+}
+
 static int symexec_reconcile(struct symexec_ctl * symexec,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap)
 {
@@ -2089,14 +2565,17 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 	struct symexec_list_tree_entry * lst_entry;
 	struct symexec_entry * entry;
 
-	u64 dir;
+	u64 dir_ino;
 	u64 index;
 	struct btrfs_key parent_key;
-	struct inode * parent_inode;
+	struct inode * dir;
 	struct inode * inode;
 	struct btrfs_acid_log_mkdir * mkdir_entry;
 	struct btrfs_trans_handle * trans;
 	unsigned long trans_blocks_used;
+	struct dentry * dentry;
+
+	int trans_num_items;
 
 	int err = 0;
 
@@ -2105,112 +2584,91 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 	fs_info = snap->root->fs_info;
 
+#if 0
+	list_for_each_entry(inode, &fs_info->sb->s_inodes, i_sb_list) {
+		BTRFS_SYM_DBG("ACTIVE INODE > ino: %llu, location: %llu, root: %llu\n",
+				inode->i_ino, BTRFS_I(inode)->location.objectid,
+				BTRFS_I(inode)->root->root_key.objectid);
+	}
+#endif
+
+	btrfs_start_delalloc_inodes(txsv->root, 0);
+	btrfs_wait_ordered_extents(txsv->root, 0, 0);
+
+	trans = btrfs_start_transaction(txsv->root, 0);
+	if (IS_ERR(trans))
+		return PTR_ERR(trans);
+	btrfs_commit_transaction(trans, txsv->root);
+
 	for (node = rb_first(&symexec->dir); node; node = rb_next(node)) {
 		lst_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
 
-		dir = lst_entry->ino;
-		parent_key.objectid = dir;
+		dir_ino = lst_entry->ino;
+		parent_key.objectid = dir_ino;
 		parent_key.type = BTRFS_INODE_ITEM_KEY;
 		parent_key.offset = 0;
 
-		parent_inode = btrfs_iget(fs_info->sb, &parent_key, snap->root, NULL);
-		if (IS_ERR_OR_NULL(parent_inode)) {
-			BTRFS_SYM_DBG("INODE-GET > parent: %p\n", parent_inode);
-			return (IS_ERR(parent_inode) ? PTR_ERR(parent_inode) : -ENOENT);
+		dir = btrfs_iget(fs_info->sb, &parent_key, snap->root, NULL);
+		if (IS_ERR_OR_NULL(dir)) {
+			BTRFS_SYM_DBG("INODE-GET > parent: %p\n", dir);
+			return (IS_ERR(dir) ? PTR_ERR(dir) : -ENOENT);
 		}
 
 		list_for_each_entry(entry, &lst_entry->list, list) {
 			if (entry->origin != ORIGIN_GLOBAL)
 				continue;
 
-			if (entry->log_entry->type != BTRFS_ACID_LOG_MKDIR)
-				continue;
+			trans_num_items = __symexec_reconcile_trans_numitems(entry);
 
-			trans = btrfs_start_transaction(snap->root, 5);
+			trans = btrfs_start_transaction(snap->root, trans_num_items);
 			if (IS_ERR(trans)) {
 				BTRFS_SYM_DBG("START-TRANS > Error\n");
-//				return PTR_ERR(trans);
 				err = PTR_ERR(trans);
 				break;
 			}
-			btrfs_set_trans_block_group(trans, parent_inode);
+			btrfs_set_trans_block_group(trans, dir);
 
-			mkdir_entry = (struct btrfs_acid_log_mkdir *) entry->log_entry;
-#if 0
-			err = btrfs_set_inode_index(parent_inode, &index);
-			if (err < 0) {
-				BTRFS_SYM_DBG("SET-INODE-INDEX > error\n");
+			switch (entry->log_entry->type) {
+			case BTRFS_ACID_LOG_CREATE:
+				err = __symexec_reconcile_create(trans, txsv, snap, dir, entry);
+				break;
+			case BTRFS_ACID_LOG_LINK:
+				err = __symexec_reconcile_link(trans, txsv, snap, dir, entry);
+				break;
+			case BTRFS_ACID_LOG_MKDIR:
+				err = __symexec_reconcile_mkdir(trans,
+						txsv, snap, dir, entry);
+				break;
+			case BTRFS_ACID_LOG_MKNOD:
+				err = __symexec_reconcile_mknod(trans, txsv, snap, dir, entry);
+				break;
+			case BTRFS_ACID_LOG_RENAME:
+				break;
+			case BTRFS_ACID_LOG_SYMLINK:
+				err = __symexec_reconcile_create(trans, txsv, snap, dir, entry);
 				break;
 			}
-#endif
-
-			BTRFS_SYM_DBG("Creating Dir > name: %.*s, "
-					"ino: %llu, dir: %llu, mode: %d\n",
-					entry->file->name.len, entry->file->name.name,
-					entry->ino, dir, mkdir_entry->mode);
-
-			inode = btrfs_new_inode(trans, snap->root, parent_inode,
-					entry->file->name.name, entry->file->name.len, dir,
-					entry->ino, BTRFS_I(parent_inode)->block_group,
-					(mkdir_entry->mode|S_IFDIR), &index);
-			if (IS_ERR(inode)) {
-				BTRFS_SYM_DBG("NEW-INODE > Error\n");
-//				return PTR_ERR(inode);
-				err = PTR_ERR(inode);
-				break;
-			}
-
-			BTRFS_SYM_DBG("\tmode: %llu, uid: %llu, gid: %llu\n",
-					(int) inode->i_mode, (int) inode->i_uid, (int) inode->i_gid);
-
-#if 0
-			err = btrfs_init_inode_security(trans, inode, dir);
-			if (err) {
-				BTRFS_SYM_DBG("INIT-INODE-SEC > Error\n");
-				break;
-			}
-#endif
-
-			err = btrfs_init_inode_security(trans, inode, parent_inode);
-			if (err < 0)
-				goto out_fail;
-			BTRFS_SYM_DBG("\tAFTER SECURITY > mode: %llu, uid: %llu, gid: %llu\n",
-					(int) inode->i_mode, (int) inode->i_uid, (int) inode->i_gid);
-
-			inode->i_op = &btrfs_acid_dir_inode_operations;
-			inode->i_fop = &btrfs_acid_dir_file_operations;
-			btrfs_set_trans_block_group(trans, inode);
-
-			btrfs_i_size_write(inode, 0);
-			err = btrfs_update_inode(trans, snap->root, inode);
-			if (err < 0)
-				goto out_fail;
-
-			err = btrfs_add_link(trans, parent_inode, inode,
-					entry->file->name.name,	entry->file->name.len, 0, index);
-			if (err < 0) {
-				BTRFS_SYM_DBG("ADD-LINK > Error\n");
-				goto out_fail;
-			}
-
-			btrfs_update_inode_block_group(trans, inode);
-			btrfs_update_inode_block_group(trans, parent_inode);
-
-out_fail:
 			trans_blocks_used = trans->blocks_used;
 			btrfs_end_transaction_throttle(trans, snap->root);
-//			if (err < 0) {
-				iput(inode);
-//			}
 			btrfs_btree_balance_dirty(snap->root, trans_blocks_used);
-			if (err < 0)
-				break;
 		}
 
-		iput(parent_inode);
-		if (err < 0)
+		iput(dir);
+		if (err < 0) {
+			BTRFS_SYM_DBG("RECONCILE > Error\n");
 			return err;
+		}
 	}
+
+	BTRFS_SYM_DBG("RECONCILE > Success!\n");
+
+#if 0
+	list_for_each_entry(inode, &fs_info->sb->s_inodes, i_sb_list) {
+		BTRFS_SYM_DBG("ACTIVE INODE > ino: %llu, location: %llu, root: %llu\n",
+				inode->i_ino, BTRFS_I(inode)->location.objectid,
+				BTRFS_I(inode)->root->root_key.objectid);
+	}
+#endif
 
 	return 0;
 }
@@ -2232,16 +2690,19 @@ int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 		return PTR_ERR(symexec);
 	}
 
-	if (list_empty(&ctl->historic_sv))
-		goto apply_txsv;
-
 	snap_gen = atomic_read(&snap->gen);
 	txsv_gen = atomic_read(&txsv->gen);
+
+	BTRFS_SYM_DBG("RECONCILE > GENERATIONS > snap: %d, txsv: %d\n",
+			snap_gen, txsv_gen);
 
 	if (snap_gen == txsv_gen) {
 		BTRFS_SYM_DBG("RECONCILE > Snap's gen == TxSv's gen: all OKAY\n");
 		goto out;
 	}
+
+	if (list_empty(&ctl->historic_sv))
+		goto apply_txsv;
 
 	list_for_each_entry(entry, &ctl->historic_sv, list) {
 		txsv_gen = atomic_read(&entry->snap->gen);

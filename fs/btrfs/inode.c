@@ -7435,3 +7435,14 @@ const struct dentry_operations btrfs_dentry_operations = {
 	.d_hash		= btrfs_acid_d_hash,
 	.d_revalidate = btrfs_acid_d_revalidate,
 };
+
+/* little hack used by txbtrfs-reconcile.c just so we don't have to remove
+ * static identifiers from this file.
+ */
+void btrfs_set_inode_aops(struct inode * inode) {
+	inode->i_mapping->a_ops = &btrfs_aops;
+}
+
+void btrfs_set_inode_extent_io_ops(struct inode * inode) {
+	BTRFS_I(inode)->io_tree.ops = &btrfs_extent_io_ops;
+}
