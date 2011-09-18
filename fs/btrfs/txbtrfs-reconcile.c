@@ -1525,14 +1525,23 @@ static int __symexec_apply_write(struct symexec_ctl * symexec,
 					entry->file.name.len, entry->file.name.name);
 			return err;
 		}
+		err = symexec_blocks_put(symexec, ino, entry, ORIGIN_GLOBAL);
+		if (err < 0) {
+			BTRFS_SYM_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
+					entry->file.name.len, entry->file.name.name);
+			return err;
+		}
 	}
 
-	err = symexec_blocks_put(symexec, ino, entry, ORIGIN_GLOBAL);
-	if (err < 0) {
-		BTRFS_SYM_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
-				entry->file.name.len, entry->file.name.name);
-		return err;
-	}
+	// if the file was created during symexec, then we see no point in keeping
+	// it in the log, as it will be reconciled with the snapshot on create
+	// using extent magic.
+//	err = symexec_blocks_put(symexec, ino, entry, ORIGIN_GLOBAL);
+//	if (err < 0) {
+//		BTRFS_SYM_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
+//				entry->file.name.len, entry->file.name.name);
+//		return err;
+//	}
 	return 0;
 }
 
@@ -1934,6 +1943,7 @@ static int __symexec_validate_readdir(struct symexec_ctl * symexec,
 		BTRFS_SYM_DBG("CONFLICT ON %.*s (local ino: %llu): "
 				"directory previously removed.\n",
 				name->len, name->name, ino);
+		return SYMEXEC_CONFLICT; // this should be taken with a grain of salt.
 	}
 
 	return SYMEXEC_OKAY;
@@ -3242,7 +3252,7 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap,
 		struct symexec_list_tree_entry * lst_entry)
 {
-	struct btrfs_key key;
+	struct btrfs_key txsv_key, snap_key;
 	struct inode * snap_inode, * txsv_inode;
 	struct symexec_entry * entry;
 	struct btrfs_acid_log_rw * rw;
@@ -3265,19 +3275,35 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 
 	fs_info = snap->root->fs_info;
 
-	key.objectid = lst_entry->ino;
-	key.type = BTRFS_INODE_ITEM_KEY;
-	key.offset = 0;
-
-	err = __symexec_get_mapped(symexec, key.objectid,
-			&key.objectid);
-	if (err < 0) {
-		BTRFS_SYM_DBG("GET-MAPPED-INODE > ino: %llu\n",
-				lst_entry->ino);
-		return err;
+	if (list_empty(&lst_entry->list)) {
+		BTRFS_SYM_DBG("LIST IS EMPTY\n");
+		return 0;
 	}
 
-	BTRFS_SYM_DBG("RECONCILING BLOCKS FOR INODE %llu\n", key.objectid);
+	// this method should only be used when reconciling shared files
+	// therefore, txsv_key.objectid == snap_key.objectid
+//	txsv_key.objectid = lst_entry->ino;
+
+//	entry = list_entry(&lst_entry->list.next, struct symexec_entry, list);
+//	txsv_key.objectid = entry->log_entry->ino;
+	txsv_key.objectid = lst_entry->ino;
+	txsv_key.type = BTRFS_INODE_ITEM_KEY;
+	txsv_key.offset = 0;
+	
+	snap_key.objectid = lst_entry->ino;
+	snap_key.type = BTRFS_INODE_ITEM_KEY;
+	snap_key.offset = 0;
+
+//	err = __symexec_get_mapped(symexec, txsv_key.objectid,
+//			&snap_key.objectid);
+//	if (err < 0) {
+//		BTRFS_SYM_DBG("GET-MAPPED-INODE > ino: %llu\n",
+//				lst_entry->ino);
+//		return err;
+//	}
+
+	BTRFS_SYM_DBG("RECONCILING BLOCKS FOR INODE (%llu -> %llu)\n", 
+			txsv_key.objectid, snap_key.objectid);
 
 	/* Populate the pages tree with the intervals from lst_entry.
 	 * Each tree key will be the start offset, while its value should be
@@ -3330,13 +3356,13 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 		}
 	}
 
-	snap_inode = btrfs_iget(fs_info->sb, &key, snap->root, NULL);
+	snap_inode = btrfs_iget(fs_info->sb, &snap_key, snap->root, NULL);
 	if (IS_ERR_OR_NULL(snap_inode)) {
 		BTRFS_SYM_DBG("SNAP-INODE-GET > inode: %p\n", snap_inode);
 		return (IS_ERR(snap_inode) ? PTR_ERR(snap_inode) : -ENOENT);
 	}
 
-	txsv_inode = btrfs_iget(fs_info->sb, &key, txsv->root, NULL);
+	txsv_inode = btrfs_iget(fs_info->sb, &txsv_key, txsv->root, NULL);
 	if (IS_ERR_OR_NULL(txsv_inode)) {
 		BTRFS_SYM_DBG("TXSV-INODE-GET > inode: %p\n", txsv_inode);
 		return (IS_ERR(txsv_inode) ? PTR_ERR(txsv_inode) : -ENOENT);

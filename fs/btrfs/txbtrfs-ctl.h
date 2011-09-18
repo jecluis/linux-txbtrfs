@@ -63,16 +63,20 @@ struct btrfs_acid_snapshot_entry
 #define __TXBTRFS_DEBUG__
 
 #ifdef __TXBTRFS_DEBUG__
+/*
 #define __TXBTRFS_DEBUG_TX__
 #define __TXBTRFS_DEBUG_CALL__
 #define __TXBTRFS_DEBUG_FS__
 #define __TXBTRFS_DEBUG_LOG__
 #define __TXBTRFS_DEBUG_ACCESS__
+*/
 #define __TXBTRFS_DEBUG_TX_COMMIT__
 #define __TXBTRFS_DEBUG_TX_START__
+/*
 #define __TXBTRFS_DEBUG_TX_VALIDATE__
 #define __TXBTRFS_DEBUG_TX_RECONCILIATE__
 #define __TXBTRFS_DEBUG_CR_LOG__
+*/
 #endif /* __TXBTRFS_DEBUG__ */
 
 #ifdef __TXBTRFS_DEBUG_TX__
