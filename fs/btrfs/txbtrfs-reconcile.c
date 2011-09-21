@@ -928,7 +928,6 @@ static void __symexec_destroy_list(struct list_head * list)
 static void __symexec_destroy_list_tree(struct rb_root * root)
 {
 	struct rb_node * node, * next_node;
-	struct symexec_entry * entry;
 	struct symexec_list_tree_entry * list_entry;
 
 	for (node = rb_first(root); node; ) {
@@ -938,7 +937,7 @@ static void __symexec_destroy_list_tree(struct rb_root * root)
 
 		__symexec_destroy_list(&list_entry->list);
 
-		kfree(entry);
+		kfree(list_entry);
 		node = next_node;
 	}
 }
