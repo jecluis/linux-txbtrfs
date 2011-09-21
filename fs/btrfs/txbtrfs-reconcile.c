@@ -871,9 +871,92 @@ static struct symexec_ctl * symexec_create(struct btrfs_acid_snapshot * snap)
 	return symexec;
 }
 
+static void __symexec_destroy_tree_nlinks(struct symexec_ctl * symexec)
+{
+	struct rb_node * node, * next_node;
+	struct symexec_nlinks_tree_entry * entry;
+
+	for (node = rb_first(&symexec->nlinks); node; ) {
+		next_node = rb_next(node);
+		entry = rb_entry(node, struct symexec_nlinks_tree_entry, rb_node);
+		rb_erase(node, &symexec->nlinks);
+		kfree(entry);
+		node = next_node;
+	}
+}
+
+static void __symexec_destroy_tree_ino(struct symexec_ctl * symexec)
+{
+	struct rb_node * node, * next_node;
+	struct symexec_ino_map_entry * entry;
+
+	for (node = rb_first(&symexec->ino_map); node; ) {
+		next_node = rb_next(node);
+		entry = rb_entry(node, struct symexec_ino_map_entry, rb_node);
+		rb_erase(node, &symexec->ino_map);
+		kfree(entry);
+		node = next_node;
+	}
+}
+
+static void __symexec_destroy_tree_dirty_dirs(struct symexec_ctl * symexec)
+{
+	struct rb_node * node, * next_node;
+	struct symexec_tree_entry * entry;
+
+	for (node = rb_first(&symexec->dirty_dirs); node; ) {
+		next_node = rb_next(node);
+		entry = rb_entry(node, struct symexec_tree_entry, rb_node);
+		rb_erase(node, &symexec->nlinks);
+		kfree(entry);
+		node = next_node;
+	}
+}
+
+static void __symexec_destroy_list(struct list_head * list)
+{
+	struct symexec_entry * entry;
+	struct list_head * lst, * ptr;
+
+	list_for_each_safe(lst, ptr, list) {
+		entry = list_entry(lst, struct symexec_entry, list);
+		list_del(lst);
+		kfree(entry);
+	}
+}
+
+static void __symexec_destroy_list_tree(struct rb_root * root)
+{
+	struct rb_node * node, * next_node;
+	struct symexec_entry * entry;
+	struct symexec_list_tree_entry * list_entry;
+
+	for (node = rb_first(root); node; ) {
+		next_node = rb_next(node);
+		list_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+		rb_erase(node, root);
+
+		__symexec_destroy_list(&list_entry->list);
+
+		kfree(entry);
+		node = next_node;
+	}
+}
+
 static void symexec_destroy(struct symexec_ctl * symexec)
 {
+	if (!symexec)
+		return;
 
+	__symexec_destroy_tree_nlinks(symexec);
+	__symexec_destroy_tree_ino(symexec);
+	__symexec_destroy_tree_dirty_dirs(symexec);
+
+	__symexec_destroy_list_tree(&symexec->blocks);
+	__symexec_destroy_list_tree(&symexec->dir);
+	__symexec_destroy_list_tree(&symexec->rem);
+
+	__symexec_destroy_list(&symexec->reconcile_log);
 }
 
 static void __print_dir_list(struct symexec_ctl * symexec,
