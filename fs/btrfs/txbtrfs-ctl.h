@@ -60,7 +60,7 @@ struct btrfs_acid_snapshot_entry
 
 
 /* Debug macros */
-#define __TXBTRFS_DEBUG__
+//#define __TXBTRFS_DEBUG__
 
 #ifdef __TXBTRFS_DEBUG__
 /*

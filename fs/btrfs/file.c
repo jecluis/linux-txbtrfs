@@ -1148,9 +1148,9 @@ int btrfs_release_file(struct inode *inode, struct file *filp)
 	if (filp->private_data)
 		btrfs_ioctl_trans_end(filp);
 
-	printk(KERN_DEBUG "<FILE> RELEASE: file = %.*s\n",
+/*	printk(KERN_DEBUG "<FILE> RELEASE: file = %.*s\n",
 			filp->f_path.dentry->d_name.len,
-			filp->f_path.dentry->d_name.name);
+			filp->f_path.dentry->d_name.name); */
 	return 0;
 }
 
