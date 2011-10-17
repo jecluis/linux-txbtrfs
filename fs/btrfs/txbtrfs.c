@@ -1281,45 +1281,6 @@ int btrfs_acid_allow(struct inode * inode)
 	return 0;
 }
 
-/* Finds the first transactional ancestor of the current task and returns its
- * associated snapshot. If 'found_pid' is not-NULL, and if a snapshot is found,
- * assigns the ancestor's pid to 'found_pid'.
- * If this method returns NULL, then 'found_pid' is set to -1.
- *
- * This method may return the very same pid in 'found_pid' as the current's.
- */
-#if 0
-struct btrfs_acid_snapshot *
-btrfs_acid_find_valid_ancestor(struct btrfs_acid_ctl * ctl,
-		struct task_struct * task, pid_t * found_pid)
-{
-	struct btrfs_acid_snapshot * snap = NULL;
-
-	if (!ctl || !task)
-		goto out;
-
-	BTRFS_SUB_DBG(TX, "current task pid = %d\n", task->pid);
-	down_read(&ctl->curr_snaps_sem);
-	while (task && !is_global_init(task)) {
-		BTRFS_SUB_DBG(TX, "\ttask pid = %d\n", task->pid);
-		snap = radix_tree_lookup(&ctl->current_snapshots, task->pid);
-		if (snap) {
-			if (found_pid)
-				*found_pid = task->pid;
-			break;
-		}
-		task = task->parent;
-	}
-	up_read(&ctl->curr_snaps_sem);
-
-out:
-	if (!snap && found_pid)
-		*found_pid = -1;
-
-	return snap;
-}
-#endif
-
 /**
  * btrfs_acid_find_valid_ancestor - Determines whether a task is within the
  * context of a transaction, either its own or of an ancestor's.
@@ -2507,7 +2468,6 @@ int btrfs_acid_tx_commit(struct file * file)
 	struct btrfs_acid_snapshot * snap = NULL;
 	struct btrfs_acid_ctl * ctl;
 	struct btrfs_fs_info * fs_info;
-//	pid_t curr_pid = current->pid;
 
 	struct dentry * parent_dentry;
 	struct inode * parent_inode;
@@ -2562,47 +2522,6 @@ int btrfs_acid_tx_commit(struct file * file)
 	mutex_lock(&ctl->commit_mutex);
 
 	__commit_print_sets(snap);
-#if 0
-	btrfs_acid_log_cr_print(snap);
-
-	down_read(&ctl->sv_sem);
-	btrfs_acid_log_cr_print(ctl->sv);
-	up_read(&ctl->sv_sem);
-
-	ret = __transaction_cr_prepare(snap, fs_info);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(TX_COMMIT, "Error Preparing CR-Logs (PID = %d)\n",
-				get_current()->pid);
-		goto out;
-	}
-//	ret = __transaction_cr_merge(snap, fs_info);
-//	if (ret < 0) {
-//		BTRFS_SUB_DBG(TX_COMMIT, "Error Merging CR-Logs (PID = %d)\n",
-//				get_current()->pid);
-//		goto out;
-//	}
-
-	/* At this point we must validate the transaction against the TxSv.
-	 * If validation succeeds, we may then finalize the commit (i.e., changing
-	 * roots); otherwise, the current transaction should abort.
-	 */
-	ret = __transaction_validate(snap, fs_info);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(TX_COMMIT, "Error validating transaction (PID = %d)\n",
-				get_current()->pid);
-		goto out;
-	}
-
-	BTRFS_SUB_DBG(TX_COMMIT, "Reconciliating transaction PID = %d\n",
-			get_current()->pid);
-	ret = __transaction_reconciliate(snap, fs_info);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(TX_COMMIT,
-				"Error reconciliating transaction (PID = %d)\n",
-				get_current()->pid);
-		goto out;
-	}
-#else
 
 	/* Committing a transaction will be a two-step process, composed
 	 * by Validation & Reconciliation.
@@ -2634,8 +2553,6 @@ int btrfs_acid_tx_commit(struct file * file)
 		goto err_cleanup;
 	}
 
-#endif
-
 	BTRFS_SUB_DBG(TX_COMMIT, "Committing transaction PID = %d\n",
 			get_current()->pid);
 
@@ -2661,7 +2578,6 @@ out:
 	return ret;
 
 err_cleanup:
-#if 1
 	/* cleanup snapshots */
 	BTRFS_SUB_DBG(TX_COMMIT, "Cleaning up Snapshot '%.*s' (pid = %d)\n",
 			snap->path.len, snap->path.name, get_current()->pid);
@@ -2677,8 +2593,6 @@ err_cleanup:
 	if (ret < 0) {
 		BTRFS_SUB_DBG(TX_COMMIT, "Error destroying in-memory snapshot\n");
 	}
-
-#endif
 
 	goto out_unlock;
 }
@@ -3169,41 +3083,6 @@ int btrfs_delete_tx_subvol_item(struct btrfs_trans_handle * trans,
 			return -EINVAL;
 	return btrfs_acid_delete_item(trans, root, location);
 }
-
-#if 0
-int btrfs_delete_snapshot_item(struct btrfs_trans_handle * trans,
-		struct btrfs_root * root, struct btrfs_key * location)
-{
-	struct btrfs_path * path;
-	int ret;
-
-	if (!trans || !root || !location)
-		return -EINVAL;
-
-	BTRFS_SUB_DBG(TX, "location [%llu %d %llu]\n",
-			location->objectid, location->type, location->offset);
-
-	path = btrfs_alloc_path();
-	if (!path)
-		return -ENOMEM;
-
-	ret = btrfs_search_slot(trans, root, location, path, -1, 1);
-	BUG_ON(ret < 0);
-	if (ret > 0)
-	{
-		ret = -ENOENT;
-		goto out;
-	}
-	ret = btrfs_del_item(trans, root, path);
-	BUG_ON(ret);
-
-	BTRFS_SUB_DBG(TX, "Deleted item.\n");
-
-out:
-	btrfs_free_path(path);
-	return ret;
-}
-#endif
 
 /**
  * btrfs_insert_tx_subvol_item - Inserts a tx subvol item to the on-disk tree.
@@ -4467,7 +4346,7 @@ static int __snapshot_destroy(struct btrfs_acid_snapshot * snap)
 		goto out;
 	}
 
-	ret = btrfs_acid_log_prune(snap);
+	ret = btrfs_acid_log_purge(snap);
 	if (ret < 0) {
 		BTRFS_SUB_DBG(TX, "\tERROR: while destroying snap's logs\n");
 		goto out;

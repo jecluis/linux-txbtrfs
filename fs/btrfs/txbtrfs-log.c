@@ -357,42 +357,9 @@ int btrfs_acid_log_readdir(struct file * filp)
 	return 0;
 }
 
-#if 0
-/* Adds an entry to the log referring to a 'readdir'/'getdents' issued
- * on directory entry (although perceived as an inode). */
-int btrfs_acid_log_readdir(struct inode * inode)
-{
-	struct btrfs_acid_snapshot * snap;
-	struct btrfs_inode * our_inode;
-	struct btrfs_acid_log_entry * log_entry;
-
-	if (unlikely(!inode))
-		return -EINVAL;
-
-	our_inode = BTRFS_I(inode);
-	snap = our_inode->root->snap;
-	if (!snap)
-		return -ENOTSUPP;
-
-	log_entry = __log_create_entry(snap, &our_inode->location,
-			0, NULL, BTRFS_ACID_LOG_READDIR);
-	if (IS_ERR(log_entry))
-		return PTR_ERR(log_entry);
-
-	BTRFS_SUB_DBG(LOG, "READDIR: Adding to read-log\n");
-	list_add(&log_entry->list, &snap->read_log);
-
-	return 0;
-}
-#endif
-
 /* Adds an entry to the log referring to a 'creat()'. */
 int btrfs_acid_log_create(struct inode * dir, struct dentry * dentry, int mode)
 {
-#if 0
-	struct btrfs_acid_log_entry * log_entry;
-	struct btrfs_acid_log_create * log_entry_create;
-#endif
 	struct btrfs_acid_log_create * log_entry;
 	struct btrfs_acid_snapshot * snap;
 	struct btrfs_root * root;
@@ -409,34 +376,6 @@ int btrfs_acid_log_create(struct inode * dir, struct dentry * dentry, int mode)
 	snap = root->snap;
 	d_name = &dentry->d_name;
 
-#if 0
-	log_entry_create = __log_create_create(mode);
-	if (IS_ERR(log_entry_create))
-		return PTR_ERR(log_entry_create);
-
-	ret = __log_create_location(&log_entry_create->location,
-			&our_parent_inode->location, &our_inode->location, d_name);
-	if (ret < 0) {
-		__log_destroy_create(log_entry_create);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &our_inode->location,
-			sizeof(*log_entry_create), log_entry_create, BTRFS_ACID_LOG_CREATE);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_create(log_entry_create);
-		return PTR_ERR(log_entry);
-	}
-
-	BTRFS_SUB_DBG(LOG, "CREATE: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "CREATE: Error logging to CRL\n");
-	}
-#else
 	log_entry = __log_create_create(parent_inode, inode, d_name, mode);
 	if (IS_ERR(log_entry)) {
 		return PTR_ERR(log_entry);
@@ -446,8 +385,6 @@ int btrfs_acid_log_create(struct inode * dir, struct dentry * dentry, int mode)
 			BTRFS_ACID_LOG_CREATE);
 	if (ret < 0)
 		__log_destroy_create(log_entry);
-
-#endif
 
 	return ret;
 }
@@ -480,35 +417,6 @@ int btrfs_acid_log_unlink(struct inode * dir, struct dentry * dentry)
 		__log_destroy_unlink(log_entry);
 	}
 
-#if 0
-	ret = __log_create_file(&log_entry_unlink->location,
-			&parent_inode->location, &our_inode->location, d_name);
-	if (ret < 0) {
-		__log_destroy_unlink(log_entry_unlink);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &our_inode->location,
-			sizeof(*log_entry_unlink), log_entry_unlink, BTRFS_ACID_LOG_UNLINK);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_unlink(log_entry_unlink);
-		return PTR_ERR(log_entry);
-	}
-
-	log_entry->nlink = dentry->d_inode->i_nlink;
-
-	BTRFS_SUB_DBG(LOG, "UNLINK: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "UNLINK: Error logging to CRL\n");
-	}
-#else
-
-#endif
-
 	return 0;
 }
 
@@ -528,13 +436,6 @@ int btrfs_acid_log_link(struct dentry * old_dentry, struct inode * dir,
 		BTRFS_SUB_DBG(LOG, "ERROR: LINK: NULL params\n");
 		return -EINVAL;
 	}
-
-#if 0
-	old_parent_dentry = dget_parent(old_dentry);
-	new_parent_dentry = dget_parent(new_dentry);
-	old_inode = BTRFS_I(old_dentry->d_inode);
-	new_inode = BTRFS_I(new_dentry->d_inode);
-#endif
 
 	old_parent_inode = BTRFS_I(old_dentry->d_parent->d_inode);
 	old_inode = BTRFS_I(old_dentry->d_inode);
@@ -557,51 +458,6 @@ int btrfs_acid_log_link(struct dentry * old_dentry, struct inode * dir,
 		__log_destroy_link(log_entry);
 		return ret;
 	}
-
-
-#if 0
-	log_entry = __log_create_link();
-	if (IS_ERR(log_entry))
-		return PTR_ERR(log_entry);
-
-	ret = __log_create_file(&log_entry->old_location,
-			&BTRFS_I(old_parent_dentry->d_inode)->location,
-			&old_inode->location, &old_dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_link(log_entry);
-		return ret;
-	}
-
-	ret = __log_create_file(&log_entry->new_location,
-			&BTRFS_I(new_parent_dentry->d_inode)->location,
-			&new_inode->location, &new_dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_link(log_entry);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &new_inode->location,
-			sizeof(*log_entry), log_entry, BTRFS_ACID_LOG_LINK);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_link(log_entry);
-		return PTR_ERR(log_entry);
-	}
-
-	BTRFS_SUB_DBG(LOG, "LINK: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	/* Although having two parents available (one for the target inode and
-	 * another for the link's final inode), we will log it only on the parent
-	 * to which the link's will belong to -- there is no change in the other
-	 * parent whatsoever.
-	 */
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, new_dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "LINK: Error logging to CRL (parent = %llu)\n",
-				dir->i_ino);
-	}
-#endif
 
 	return ret;
 }
@@ -632,34 +488,6 @@ int btrfs_acid_log_mkdir(struct inode * dir, struct dentry * dentry, int mode)
 	if (ret < 0)
 		return ret;
 
-#if 0
-	log_entry =
-			__log_create_mkdir(mode);
-	if (IS_ERR(log_entry))
-		return PTR_ERR(log_entry);
-	ret = __log_create_file(&log_entry->location,
-			&dir_inode->location, &dentry_inode->location, qstr);
-	if (ret < 0) {
-		__log_destroy_mkdir(log_entry);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &dentry_inode->location,
-			sizeof(*log_entry), log_entry, BTRFS_ACID_LOG_MKDIR);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_mkdir(log_entry);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "MKDIR: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "MKDIR: Error logging to CRL\n");
-	}
-#endif
-
 	return ret;
 }
 
@@ -687,37 +515,6 @@ int btrfs_acid_log_rmdir(struct inode * dir, struct dentry * dentry)
 		__log_destroy_rmdir(log_entry);
 		return ret;
 	}
-
-#if 0
-	log_entry_rmdir =
-			__log_create_rmdir();
-	if (IS_ERR(log_entry_rmdir))
-		return PTR_ERR(log_entry_rmdir);
-
-	ret = __log_create_file(&log_entry_rmdir->location,
-			&BTRFS_I(dir)->location, &dentry_inode->location, &dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_rmdir(log_entry_rmdir);
-		return ret;
-	}
-
-	snap = BTRFS_I(dir)->root->snap;
-	log_entry = __log_create_entry(snap, &dentry_inode->location,
-			sizeof(*log_entry_rmdir), log_entry_rmdir, BTRFS_ACID_LOG_RMDIR);
-	if (IS_ERR(log_entry)) {
-		BTRFS_SUB_DBG(LOG, "#3\n");
-		__log_destroy_rmdir(log_entry_rmdir);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "RMDIR: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "RMDIR: Error logging to CRL\n");
-	}
-#endif
 
 	return 0;
 }
@@ -771,58 +568,6 @@ int btrfs_acid_log_rename(struct inode * old_dir, struct dentry * old_dentry,
 		return ret;
 	}
 
-#if 0
-	log_rename = __log_create_rename();
-	if (IS_ERR(log_rename))
-		return PTR_ERR(log_rename);
-
-	ret = __log_create_file(&log_rename->old_location,
-			&BTRFS_I(old_dir)->location, &old_d_inode->location,
-			&old_dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_rename(log_rename);
-		return ret;
-	}
-
-	ret = __log_create_file(&log_rename->new_location,
-			&BTRFS_I(new_dir)->location, &new_d_inode->location,
-			&new_dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_rename(log_rename);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &new_d_inode->location,
-			sizeof(*log_rename), log_rename, BTRFS_ACID_LOG_RENAME);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_rename(log_rename);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "RENAME: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	/* A rename may affect two different parents. This is why we must log it
-	 * into the two different parents in the CR-Log. If both parents are the
-	 * same, then we will only log it once.
-	 */
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			old_dir->i_ino, old_dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "RENAME: Error logging to CRL (parent = %llu)\n",
-				old_dir->i_ino);
-	}
-
-	if (old_dir->i_ino != new_dir->i_ino) {
-		ret = btrfs_acid_log_cr_insert(snap, log_entry,
-				new_dir->i_ino, new_dentry->d_inode->i_ino);
-		if (ret < 0) {
-			BTRFS_SUB_DBG(LOG, "RENAME: Error logging to CRL "
-					"(parents: old = %llu, new = %llu)\n",
-					old_dir->i_ino, new_dir->i_ino);
-		}
-	}
-#endif
-
 	return 0;
 }
 
@@ -856,44 +601,11 @@ int btrfs_acid_log_symlink(struct inode * dir, struct dentry * dentry,
 		return ret;
 	}
 
-#if 0
-	log_symlink = __log_create_symlink(symname);
-	if (IS_ERR(log_symlink))
-		return PTR_ERR(log_symlink);
-
-	ret = __log_create_file(&log_symlink->location, &BTRFS_I(dir)->location,
-			&BTRFS_I(dentry->d_inode)->location, &dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_symlink(log_symlink);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &BTRFS_I(dentry->d_inode)->location,
-			sizeof(*log_symlink), log_symlink, BTRFS_ACID_LOG_SYMLINK);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_symlink(log_symlink);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "SYMLINK: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	/* Similarly to the link operation, this operation will only affect the
-	 * parent of the target symlink inode; therefore, we only log it once.
-	 */
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "SYMLINK: Error logging to CRL\n");
-	}
-#endif
-
 	return 0;
 }
 
 int btrfs_acid_log_setattr(struct dentry * dentry, struct iattr * attr)
 {
-//	struct btrfs_acid_log_entry * log_entry;
-//	struct btrfs_acid_log_attr * log_attr;
 	void * log_entry;
 	struct btrfs_inode * parent, * inode;
 	struct qstr * name;
@@ -925,18 +637,6 @@ int btrfs_acid_log_setattr(struct dentry * dentry, struct iattr * attr)
 		__log_destroy_attr(log_entry);
 		return err;
 	}
-
-#if 0
-	inode = BTRFS_I(dentry->d_inode);
-	log_entry = __log_create_entry(inode->root->snap, &inode->location,
-			sizeof(*log_attr), log_attr, BTRFS_ACID_LOG_ATTR_SET);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_attr(log_attr);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "SET-ATTR: Adding to write-log\n");
-	list_add(&log_entry->list, &inode->root->snap->write_log);
-#endif
 
 	return 0;
 }
@@ -971,35 +671,6 @@ int btrfs_acid_log_mknod(struct inode * dir, struct dentry * dentry,
 		return ret;
 	}
 
-
-#if 0
-	log_mknod = __log_create_mknod(mode, rdev);
-	if (IS_ERR(log_mknod))
-		return PTR_ERR(log_mknod);
-
-	ret = __log_create_file(&log_mknod->location, &BTRFS_I(dir)->location,
-			&BTRFS_I(dentry->d_inode)->location, &dentry->d_name);
-	if (ret < 0) {
-		__log_destroy_mknod(log_mknod);
-		return ret;
-	}
-
-	log_entry = __log_create_entry(snap, &BTRFS_I(dentry->d_inode)->location,
-			sizeof(*log_mknod), log_mknod, BTRFS_ACID_LOG_MKNOD);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_mknod(log_mknod);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "MKNOD: Adding to write-log\n");
-	list_add(&log_entry->list, &snap->write_log);
-
-	ret = btrfs_acid_log_cr_insert(snap, log_entry,
-			dir->i_ino, dentry->d_inode->i_ino);
-	if (ret < 0) {
-		BTRFS_SUB_DBG(LOG, "MKNOD: Error logging to CRL\n");
-	}
-#endif
-
 	return 0;
 }
 
@@ -1031,22 +702,6 @@ int btrfs_acid_log_setxattr(struct dentry * dentry, const char * name,
 		return err;
 	}
 
-#if 0
-	log_xattr = __log_create_xattr(&inode->location, &dentry->d_name,
-			name, value, size, flags);
-	if (IS_ERR(log_xattr))
-		return PTR_ERR(log_xattr);
-
-	log_entry = __log_create_entry(inode->root->snap, &inode->location,
-			sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_SET);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_xattr(log_xattr);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "SET-X-ATTR: Adding to write-log\n");
-	list_add(&log_entry->list, &inode->root->snap->write_log);
-#endif
-
 	return 0;
 }
 
@@ -1075,21 +730,6 @@ int btrfs_acid_log_getxattr(struct dentry * dentry, const char * name)
 		__log_destroy_xattr(log_xattr);
 		return err;
 	}
-#if 0
-	log_xattr = __log_create_xattr(&inode->location, &dentry->d_name,
-			name, NULL, 0, 0);
-	if (IS_ERR(log_xattr))
-		return PTR_ERR(log_xattr);
-
-	log_entry = __log_create_entry(inode->root->snap, &inode->location,
-			sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_GET);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_xattr(log_xattr);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "GET-X-ATTR: Adding to read-log\n");
-	list_add(&log_entry->list, &inode->root->snap->read_log);
-#endif
 
 	return 0;
 }
@@ -1098,7 +738,6 @@ int btrfs_acid_log_listxattr(struct dentry * dentry,
 		char * buffer, size_t user_size, ssize_t real_size)
 {
 	struct btrfs_acid_log_xattr * log_xattr;
-//	struct btrfs_acid_log_entry * log_entry;
 	struct btrfs_inode * parent, * inode;
 	struct qstr * d_name;
 	char * ptr, * attr_name;
@@ -1131,23 +770,6 @@ int btrfs_acid_log_listxattr(struct dentry * dentry,
 			return err;
 		}
 
-#if 0
-		log_xattr = __log_create_xattr(&inode->location, &dentry->d_name,
-				attr_name, NULL, 0, 0);
-		if (IS_ERR(log_xattr))
-			return PTR_ERR(log_xattr);
-
-		log_entry = __log_create_entry(inode->root->snap, &inode->location,
-				sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_LIST);
-		if (IS_ERR(log_entry)) {
-			__log_destroy_xattr(log_xattr);
-			return PTR_ERR(log_entry);
-		}
-
-		BTRFS_SUB_DBG(LOG, "LIST-X-ATTR: Adding to read-log\n");
-		list_add(&log_entry->list, &inode->root->snap->read_log);
-#endif
-
 		if (missing <= 0)
 			break;
 	}
@@ -1157,7 +779,6 @@ int btrfs_acid_log_listxattr(struct dentry * dentry,
 
 int btrfs_acid_log_removexattr(struct dentry * dentry, const char * name)
 {
-//	struct btrfs_acid_log_entry * log_entry;
 	struct btrfs_acid_log_xattr * log_xattr;
 	struct btrfs_inode * parent, * inode;
 	struct qstr * d_name;
@@ -1180,20 +801,6 @@ int btrfs_acid_log_removexattr(struct dentry * dentry, const char * name)
 		__log_destroy_xattr(log_xattr);
 		return err;
 	}
-#if 0
-	log_xattr = __log_create_xattr(&inode->location, &dentry->d_name, name,
-			NULL, 0, 0);
-	if (IS_ERR(log_xattr))
-		return PTR_ERR(log_xattr);
-	log_entry = __log_create_entry(inode->root->snap, &inode->location,
-			sizeof(*log_xattr), log_xattr, BTRFS_ACID_LOG_XATTR_REMOVE);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_xattr(log_xattr);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "REMOVE-X-ATTR: Adding to write-log\n");
-	list_add(&log_entry->list, &inode->root->snap->write_log);
-#endif
 
 	return 0;
 }
@@ -1262,17 +869,6 @@ int btrfs_acid_log_permission(struct inode * inode, int mask)
 		return err;
 	}
 
-#if 0
-	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
-			&BTRFS_I(inode)->location, sizeof(*log_permission), log_permission,
-			BTRFS_ACID_LOG_PERMISSION);
-	if (IS_ERR(log_entry)) {
-		kfree(log_permission);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "PERMISSION: Adding to read-log\n");
-	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->read_log);
-#endif
 	return 0;
 }
 
@@ -1308,23 +904,6 @@ int btrfs_acid_log_mmap(struct file * filp, struct vm_area_struct * vma)
 		__log_destroy_mmap(log_mmap);
 		return err;
 	}
-#if 0
-	log_mmap = __log_create_mmap(&BTRFS_I(inode)->location,
-			&fdentry(filp)->d_name, start, end, vma->vm_page_prot,
-			vma->vm_flags);
-	if (IS_ERR(log_mmap))
-		return PTR_ERR(log_mmap);
-
-	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
-			&BTRFS_I(inode)->location, sizeof(*log_mmap), log_mmap,
-			BTRFS_ACID_LOG_MMAP);
-	if (IS_ERR(log_entry)) {
-		__log_destroy_mmap(log_mmap);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "MMAP: Adding to read-log\n");
-	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->read_log);
-#endif
 
 	return 0;
 }
@@ -1368,21 +947,6 @@ int btrfs_acid_log_page_mkwrite(struct vm_area_struct * vma,
 		return err;
 	}
 
-#if 0
-	rw_entry = __log_create_rw(vmf->pgoff, vmf->pgoff);
-	if (IS_ERR(rw_entry))
-		return PTR_ERR(rw_entry);
-	log_entry = __log_create_entry(BTRFS_I(inode)->root->snap,
-			&BTRFS_I(inode)->location, sizeof(*rw_entry), rw_entry,
-			BTRFS_ACID_LOG_WRITE);
-	if (IS_ERR(log_entry)) {
-		kfree(rw_entry);
-		return PTR_ERR(log_entry);
-	}
-	BTRFS_SUB_DBG(LOG, "PAGE-MKWRITE: Adding to write-log\n");
-	list_add(&log_entry->list, &BTRFS_I(inode)->root->snap->write_log);
-#endif
-
 	return 0;
 }
 
@@ -1409,7 +973,7 @@ void btrfs_acid_log_ops_print(struct btrfs_acid_snapshot * snap)
 	mutex_unlock(&snap->op_log_mutex);
 }
 
-int btrfs_acid_log_prune(struct btrfs_acid_snapshot * snap)
+int btrfs_acid_log_purge(struct btrfs_acid_snapshot * snap)
 {
 	struct btrfs_acid_log_entry * entry, * tmp;
 	int ret = 0;
@@ -1705,17 +1269,6 @@ __log_create_mmap(struct btrfs_inode * parent, struct btrfs_inode * inode,
 	entry->first_page = start;
 	entry->last_page = end;
 
-#if 0
-	__clone_keys(&entry->location, location);
-	err = __clone_names(&entry->name, name);
-	if (err < 0) {
-		kfree(entry);
-		return ERR_PTR(err);
-	}
-
-	entry->pages.first_page = start;
-	entry->pages.last_page = end;
-#endif
 	entry->prot = prot;
 	entry->flags = flags;
 
@@ -1726,7 +1279,6 @@ static void __log_destroy_mmap(struct btrfs_acid_log_mmap * entry)
 {
 	if (entry) {
 		__log_destroy_file(&entry->file);
-//		__free_name(&entry->name);
 		kfree(entry);
 	}
 }
@@ -1777,8 +1329,6 @@ __log_create_truncate(struct btrfs_inode * parent, struct btrfs_inode * inode,
 		return ERR_PTR(err);
 	}
 
-//	__clone_keys(&entry->location, location);
-//	entry->size = size;
 	entry->from = size >> PAGE_CACHE_SHIFT;
 
 	return entry;
@@ -1819,13 +1369,6 @@ __log_create_xattr(struct btrfs_inode * parent, struct btrfs_inode * inode,
 	if (err < 0)
 		goto err_free;
 
-#if 0
-	__clone_keys(&entry->location, location);
-	err = __clone_names(&entry->name, name);
-	if (err < 0)
-		goto err_free;
-
-#endif
 	if (!attr_name)
 		goto out;
 
@@ -1864,7 +1407,6 @@ err_free:
 static void __log_destroy_xattr(struct btrfs_acid_log_xattr * entry)
 {
 	if (entry) {
-//		__free_name(&entry->name);
 		__log_destroy_file(&entry->file);
 		__free_name(&entry->attr_name);
 		if (entry->value)
@@ -1962,7 +1504,6 @@ __log_create_rename(struct btrfs_inode * old_parent,
 {
 	int err;
 	struct btrfs_acid_log_rename * entry;
-//	struct btrfs_key * new_inode_key = NULL;
 
 	if (!old_parent || !old_inode || !old_name
 			|| !new_parent || !new_name)
@@ -2282,7 +1823,6 @@ static void __log_destroy_attr(struct btrfs_acid_log_attr * entry)
 {
 	if (entry) {
 		__log_destroy_file(&entry->file);
-//		__free_name(&entry->name);
 		kfree(entry);
 	}
 }
@@ -2328,40 +1868,6 @@ static void __log_destroy_rw(struct btrfs_acid_log_rw * entry)
 		kfree(entry);
 	}
 }
-
-#if 0
-static struct btrfs_acid_log_entry *
-__log_create_entry(struct btrfs_acid_snapshot * snap,
-		struct btrfs_key * location,
-		size_t size, void * data, u32 type)
-{
-	struct btrfs_acid_ctl * ctl;
-	struct btrfs_acid_log_entry * entry;
-	int clock;
-
-	/* we may have a NULL data entry, as long as size is 0 (zero) */
-	if (!snap || !location || (!data && size) || (data && !size))
-		return ERR_PTR(-EINVAL);
-
-	entry = kzalloc(sizeof(*entry), GFP_NOFS);
-	if (!entry)
-		return ERR_PTR(-ENOMEM);
-
-	ctl = &snap->root->fs_info->acid_ctl;
-	clock = atomic_inc_return(&ctl->clock);
-
-	entry->clock = clock;
-	entry->size = size;
-	entry->data = data;
-	entry->type = type;
-
-	entry->location.objectid = location->objectid;
-	entry->location.type = location->type;
-	entry->location.offset = location->offset;
-
-	return entry;
-}
-#endif
 
 /**
  * __log_destroy_entry - Destroys a Log Entry and its data by operation type.
@@ -2427,9 +1933,6 @@ static void __log_destroy_entry(struct btrfs_acid_log_entry * entry)
 		__log_destroy_xattr(entry);
 		break;
 	}
-//
-//destroy_entry:
-//	kfree(entry);
 }
 
 static int
