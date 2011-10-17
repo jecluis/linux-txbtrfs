@@ -2649,15 +2649,6 @@ int btrfs_acid_tx_commit(struct file * file)
 	if (ret < 0)
 		BTRFS_SUB_DBG(TX_COMMIT, "Error committing snapshot\n");
 
-#if 0
-	if (ret >= 0) {
-		ret = btrfs_acid_destroy_snapshot(snap, fs_info);
-		if (ret < 0) {
-			BTRFS_SUB_DBG(TX_COMMIT, "Error destroying snapshot\n");
-		}
-	}
-#endif
-
 out_unlock:
 	mutex_unlock(&ctl->commit_mutex);
 out:
@@ -2670,7 +2661,25 @@ out:
 	return ret;
 
 err_cleanup:
+#if 1
 	/* cleanup snapshots */
+	BTRFS_SUB_DBG(TX_COMMIT, "Cleaning up Snapshot '%.*s' (pid = %d)\n",
+			snap->path.len, snap->path.name, get_current()->pid);
+	BTRFS_SUB_DBG(TX_COMMIT, "  Destroying on-disk snapshot\n");
+	ret = btrfs_acid_destroy_snapshot(snap, fs_info);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_COMMIT, "Error destroying on-disk snapshot\n");
+		goto out_unlock;
+	}
+
+	BTRFS_SUB_DBG(TX_COMMIT, "  Destroying in-memory snapshot\n");
+	ret = __snapshot_destroy(snap);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX_COMMIT, "Error destroying in-memory snapshot\n");
+	}
+
+#endif
+
 	goto out_unlock;
 }
 
@@ -3280,12 +3289,6 @@ void btrfs_acid_vm_open(struct vm_area_struct * area)
 static int __acid_root_destroy(struct btrfs_acid_snapshot * snap,
 		struct btrfs_fs_info * fs_info, int remove_snap_item)
 {
-
-//}
-//
-//int btrfs_acid_destroy_snapshot(struct btrfs_acid_snapshot * snap,
-//		struct btrfs_fs_info * fs_info)
-//{
 	struct inode * parent_inode;
 	struct inode * snap_inode;
 //	struct dentry * parent_dentry;
@@ -3689,6 +3692,8 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	struct dentry * dentry, * dentry_parent;
 	struct btrfs_acid_snapshot * txsv;
 
+	BTRFS_SUB_DBG(TX, "[BGN] Setting TxSv\n");
+
 	if (!args)
 		return -EINVAL;
 
@@ -3722,14 +3727,17 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	 * already exists, or keep it until we finish the whole operation, while
 	 * avoiding some other dude beating us to it.
 	 */
+	BTRFS_SUB_DBG(TX, "[...] Acquiring sv_sem\n");
+
 	down_write(&sub_root->fs_info->acid_ctl.sv_sem);
 	if (sub_root->fs_info->acid_ctl.sv != NULL)
 	{
 		ret = -EEXIST;
 		goto out_up_write_sv;
 	}
-
 	down_write(&sub_root->fs_info->subvol_sem);
+	BTRFS_SUB_DBG(TX, "[...] Released sv_sem\n");
+	BTRFS_SUB_DBG(TX, "[...] Starting Transaction\n");
 	trans = btrfs_start_transaction(sub_root->fs_info->extent_root, 2);
 	if (IS_ERR(trans)) {
 		ret = PTR_ERR(trans);
@@ -3737,17 +3745,20 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	}
 	btrfs_record_root_in_trans(trans, sub_root->fs_info->tree_root);
 
+	BTRFS_SUB_DBG(TX, "[...] Setting Root Flags\n");
 	ret = __txsv_set_root_flags(trans, sub_root);
 	if (ret < 0)
 		goto out_up_write;
 
+	BTRFS_SUB_DBG(TX, "[...] Inserting TxSv Item\n");
 	dentry_parent = dget_parent(dentry);
 	ret = btrfs_insert_tx_subvol_item(trans, sub_root->fs_info->tree_root,
 			&sub_root->root_key,
 			&dentry->d_name, dentry_parent->d_inode->i_ino, 0);
 
-
+	BTRFS_SUB_DBG(TX, "[...] Committing Transaction\n");
 	btrfs_commit_transaction(trans, sub_root);
+	BTRFS_SUB_DBG(TX, "[...] Transaction Committed\n");
 
 #if 0
 	initial_flags = btrfs_root_flags(&sub_root->root_item);
@@ -3785,11 +3796,22 @@ int btrfs_acid_set_tx_subvol(struct file * file,
 	btrfs_commit_transaction(trans, sub_root);
 #endif
 
+	BTRFS_SUB_DBG(TX, "[...] Creating in-memory TxSv\n");
 	txsv = __txsv_create(sub_root, &sub_root->root_key,
 			dentry_parent->d_inode->i_ino,
 			(char *) dentry->d_name.name, dentry->d_name.len);
+	if (IS_ERR(txsv)) {
+		BTRFS_SUB_DBG(TX, "Error creating TxSv\n");
+		ret = PTR_ERR(txsv);
+		goto err_txsv;
+	}
+	BTRFS_SUB_DBG(TX, "[...] TxSv created: %p\n", txsv);
+	BTRFS_SUB_DBG(TX, "[...] Setting TxSv\n");
 	sub_root->fs_info->acid_ctl.sv = txsv;
+	sub_root->snap = txsv;
+	BTRFS_SUB_DBG(TX, "[...] TxSv Set\n");
 
+err_txsv:
 	d_drop(dentry);
 	dput(dentry_parent);
 
@@ -3806,6 +3828,8 @@ out_up_write:
 	up_write(&sub_root->fs_info->subvol_sem);
 out_up_write_sv:
 	up_write(&sub_root->fs_info->acid_ctl.sv_sem);
+
+	BTRFS_SUB_DBG(TX, "[END] Finished it with return: %d\n", ret);
 	return ret;
 }
 
@@ -4028,6 +4052,34 @@ int btrfs_acid_exit(struct btrfs_fs_info * fs_info)
 }
 
 /**
+ * __snapshot_create - Creates an acid snapshot, initializing those fields that
+ * are always initialized in the same way, regardless the calling method.
+ *
+ * This method does not initialize or expects a parameter for the snapshot's
+ * name, location or anything that may be dependent from the calling method's
+ * context.
+ */
+static struct btrfs_acid_snapshot * __snapshot_create(void) {
+	struct btrfs_acid_snapshot * snap;
+	int ret;
+
+	snap = kzalloc(sizeof(*snap), GFP_NOFS);
+	if (!snap)
+		return ERR_PTR(-ENOMEM);
+
+	INIT_LIST_HEAD(&snap->known_pids);
+	init_rwsem(&snap->known_pids_sem);
+
+	ret = __snapshot_logs_init(snap);
+	if (ret < 0) {
+		kfree(snap);
+		return ERR_PTR(ret);
+	}
+
+	return snap;
+}
+
+/**
  * __snapshot_read_leaf - Read a snapshot item from a leaf.
  *
  * Reads a snapshot item from a leaf, as long as the 'leaf' extent buffer
@@ -4051,10 +4103,14 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 	if (IS_ERR(si))
 		return ERR_CAST(si);
 
-	err = -ENOMEM;
-	snap = kzalloc(sizeof(*snap), GFP_NOFS);
-	if (!snap)
-		goto err;
+//	err = -ENOMEM;
+//	snap = kzalloc(sizeof(*snap), GFP_NOFS);
+//	if (!snap)
+//		goto err;
+	snap = __snapshot_create();
+	if (IS_ERR(snap))
+		return snap;
+
 #if 0
 	snap->location = kzalloc(sizeof(*snap->location), GFP_NOFS);
 	if (!snap->location)
@@ -4077,6 +4133,7 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 	snap->dir_index = btrfs_snapshot_dir_index(leaf, si);
 	snap->path.len = btrfs_snapshot_name_len(leaf, si);
 
+	err = -ENOMEM;
 	snap->path.name = kzalloc(sizeof(char) * snap->path.len, GFP_NOFS);
 	if (!snap->path.name)
 		goto err_free_src_location;
@@ -4094,7 +4151,7 @@ __snapshot_read_leaf(struct extent_buffer * leaf,
 	 * because __remove_snapshot() depends on the list being initialized, we
 	 * create the list. It may be ugly, but the alternative would be uglier.
 	 */
-	INIT_LIST_HEAD(&snap->known_pids);
+//	INIT_LIST_HEAD(&snap->known_pids);
 
 	return snap;
 
@@ -4106,7 +4163,7 @@ err_free_src_location:
 //	kfree(snap->location);
 //err_free_snap:
 	kfree(snap);
-err:
+//err:
 	return ERR_PTR(err);
 }
 
@@ -4237,9 +4294,13 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 
 	ctl = &root->fs_info->acid_ctl;
 
-	snap = kzalloc(sizeof(*snap), GFP_NOFS);
-	if (!snap)
-		return ERR_PTR(-ENOMEM);
+//	snap = kzalloc(sizeof(*snap), GFP_NOFS);
+//	if (!snap)
+//		return ERR_PTR(-ENOMEM);
+
+	snap = __snapshot_create();
+	if (IS_ERR(snap))
+		goto out_err;
 
 	/* lookup snapshot item -- Why? */
 
@@ -4249,11 +4310,6 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 		return ERR_PTR(ret);
 	}
 
-//	down_read(&ctl->sv_sem);
-//	BUG_ON(__is_null_key(&ctl->sv->location));
-//	ret = btrfs_acid_copy_key(&snap->src_location, &ctl->sv->location);
-//	BUG_ON(ret);
-//	up_read(&ctl->sv_sem);
 	BUG_ON(__is_null_key(&src_sv->location));
 	ret = btrfs_acid_copy_key(&snap->src_location, &src_sv->location);
 	BUG_ON(ret);
@@ -4262,8 +4318,8 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 	snap->owner_pid = current->pid;
 	snap->parent_ino = parent->i_ino;
 
-	INIT_LIST_HEAD(&snap->known_pids);
-	init_rwsem(&snap->known_pids_sem);
+//	INIT_LIST_HEAD(&snap->known_pids);
+//	init_rwsem(&snap->known_pids_sem);
 
 	/* Create a snapshot name and hash for dcache, and also create an hash
 	 * for our own comparing purposes.
@@ -4283,25 +4339,21 @@ static struct btrfs_acid_snapshot * __snapshot_add(struct btrfs_root * root,
 	snap->path.hash = path->hash;
 	snap->hash = btrfs_name_hash(path->name, path->len);
 
-	/* Initiate read/write logs */
-//	INIT_LIST_HEAD(&snap->read_log);
-//	INIT_LIST_HEAD(&snap->write_log);
-
-	ret = __snapshot_logs_init(snap);
-	if (ret < 0)
-		goto out_err;
+//	ret = __snapshot_logs_init(snap);
+//	if (ret < 0)
+//		goto out_err;
 
 	/* Snapshot entry created; now we must insert it to the snapshot's tree. */
 	down_write(&ctl->curr_snaps_sem);
 	ret = radix_tree_insert(&ctl->current_snapshots, snap->owner_pid, snap);
 	up_write(&ctl->curr_snaps_sem);
 
+//out_err:
+//	if (ret) {
+//		kfree(snap);
+//		snap = ERR_PTR(ret);
+//	}
 out_err:
-	if (ret) {
-		kfree(snap);
-		snap = ERR_PTR(ret);
-	}
-
 	return snap;
 }
 
@@ -4412,6 +4464,12 @@ static int __snapshot_destroy(struct btrfs_acid_snapshot * snap)
 	ret = __snapshot_remove(snap);
 	if (ret < 0) {
 		BTRFS_SUB_DBG(TX, "\tERROR: while destroying snap\n");
+		goto out;
+	}
+
+	ret = btrfs_acid_log_prune(snap);
+	if (ret < 0) {
+		BTRFS_SUB_DBG(TX, "\tERROR: while destroying snap's logs\n");
 		goto out;
 	}
 

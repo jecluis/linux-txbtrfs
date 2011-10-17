@@ -1,7 +1,7 @@
 #!/bin/bash
 
-build_dir=/usr/src/builds/btrfs-unstable
-src_dir=/usr/src/btrfs-unstable;
+build_dir=/usr/src/build
+src_dir=/usr/src/btrfs-unstable
 
 ret=0;
 

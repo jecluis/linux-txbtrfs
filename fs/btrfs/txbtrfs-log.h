@@ -395,6 +395,7 @@ int btrfs_acid_log_page_mkwrite(struct vm_area_struct * vma,
 
 void btrfs_acid_log_cr_print(struct btrfs_acid_snapshot * snap);
 void btrfs_acid_log_ops_print(struct btrfs_acid_snapshot * snap);
+int btrfs_acid_log_prune(struct btrfs_acid_snapshot * snap);
 
 static inline void __clone_keys(struct btrfs_key * dst, struct btrfs_key * src)
 {

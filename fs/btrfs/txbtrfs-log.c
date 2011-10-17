@@ -1409,6 +1409,26 @@ void btrfs_acid_log_ops_print(struct btrfs_acid_snapshot * snap)
 	mutex_unlock(&snap->op_log_mutex);
 }
 
+int btrfs_acid_log_prune(struct btrfs_acid_snapshot * snap)
+{
+	struct btrfs_acid_log_entry * entry, * tmp;
+	int ret = 0;
+
+	if (!snap)
+		return -EINVAL;
+
+	if (list_empty(&snap->op_log))
+		goto out;
+
+	list_for_each_entry_safe(entry, tmp, &snap->op_log, list) {
+		list_del(&entry->list);
+		__log_destroy_entry(entry);
+	}
+
+out:
+	return ret;
+}
+
 #if 0
 int btrfs_acid_log_purge(struct list_head * log, u64 ino, u64 start, u64 end)
 {
@@ -2341,6 +2361,7 @@ __log_create_entry(struct btrfs_acid_snapshot * snap,
 
 	return entry;
 }
+#endif
 
 /**
  * __log_destroy_entry - Destroys a Log Entry and its data by operation type.
@@ -2356,64 +2377,60 @@ static void __log_destroy_entry(struct btrfs_acid_log_entry * entry)
 	if (!entry)
 		return;
 
-	if (!entry->data)
-		goto destroy_entry;
-
 	switch (entry->type) {
 	case BTRFS_ACID_LOG_ATTR_GET:
 	case BTRFS_ACID_LOG_ATTR_SET:
-		__log_destroy_attr(entry->data);
+		__log_destroy_attr(entry);
 		break;
 	case BTRFS_ACID_LOG_CREATE:
-		__log_destroy_create(entry->data);
+		__log_destroy_create(entry);
 		break;
 	case BTRFS_ACID_LOG_LINK:
-		__log_destroy_link(entry->data);
+		__log_destroy_link(entry);
 		break;
 	case BTRFS_ACID_LOG_MKDIR:
-		__log_destroy_mkdir(entry->data);
+		__log_destroy_mkdir(entry);
 		break;
 	case BTRFS_ACID_LOG_MKNOD:
-		__log_destroy_mknod(entry->data);
+		__log_destroy_mknod(entry);
 	case BTRFS_ACID_LOG_MMAP:
-		__log_destroy_mmap(entry->data);
+		__log_destroy_mmap(entry);
 		break;
 	case BTRFS_ACID_LOG_PERMISSION:
-		__log_destroy_permission(entry->data);
+		__log_destroy_permission(entry);
 		break;
 	case BTRFS_ACID_LOG_READ:
 	case BTRFS_ACID_LOG_WRITE:
-		__log_destroy_rw(entry->data);
+		__log_destroy_rw(entry);
 		break;
 	case BTRFS_ACID_LOG_READDIR: /* no data defined */
 		break;
 	case BTRFS_ACID_LOG_RENAME:
-		__log_destroy_rename(entry->data);
+		__log_destroy_rename(entry);
 		break;
 	case BTRFS_ACID_LOG_RMDIR:
-		__log_destroy_rmdir(entry->data);
+		__log_destroy_rmdir(entry);
 		break;
 	case BTRFS_ACID_LOG_SYMLINK:
-		__log_destroy_symlink(entry->data);
+		__log_destroy_symlink(entry);
 		break;
 	case BTRFS_ACID_LOG_TRUNCATE:
-		__log_destroy_truncate(entry->data);
+		__log_destroy_truncate(entry);
 		break;
 	case BTRFS_ACID_LOG_UNLINK:
-		__log_destroy_unlink(entry->data);
+		__log_destroy_unlink(entry);
 		break;
 	case BTRFS_ACID_LOG_XATTR_GET:
 	case BTRFS_ACID_LOG_XATTR_SET:
 	case BTRFS_ACID_LOG_XATTR_REMOVE:
 	case BTRFS_ACID_LOG_XATTR_LIST:
-		__log_destroy_xattr(entry->data);
+		__log_destroy_xattr(entry);
 		break;
 	}
-
-destroy_entry:
-	kfree(entry);
+//
+//destroy_entry:
+//	kfree(entry);
 }
-#endif
 
 static int
 __log_create_file(struct btrfs_acid_log_file * file,
