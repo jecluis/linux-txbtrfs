@@ -228,7 +228,8 @@ int btrfs_acid_commit_snapshot(struct btrfs_acid_snapshot * snap,
 
 /* inline methods */
 //static inline int btrfs_acid_tx_commit(void) { return -EOPNOTSUPP; }
-static inline int btrfs_acid_tx_abort(void) {return -EOPNOTSUPP; }
+//static inline int btrfs_acid_tx_abort(void) {return -EOPNOTSUPP; }
+int btrfs_acid_tx_abort(struct file * file);
 
 static inline struct btrfs_acid_snapshot *
 btrfs_acid_current_snapshot(struct btrfs_acid_ctl * ctl)

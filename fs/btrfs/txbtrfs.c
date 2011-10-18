@@ -1611,6 +1611,12 @@ out_err:
 	return ret;
 }
 
+int btrfs_acid_tx_abort(struct file * file)
+{
+	int ret = 0;
+	return ret;
+}
+
 /**
  * __commit_print_sets - print a snapshot's read- and write-sets.
  *
@@ -2578,6 +2584,7 @@ out:
 	return ret;
 
 err_cleanup:
+#if 0
 	/* cleanup snapshots */
 	BTRFS_SUB_DBG(TX_COMMIT, "Cleaning up Snapshot '%.*s' (pid = %d)\n",
 			snap->path.len, snap->path.name, get_current()->pid);
@@ -2593,7 +2600,7 @@ err_cleanup:
 	if (ret < 0) {
 		BTRFS_SUB_DBG(TX_COMMIT, "Error destroying in-memory snapshot\n");
 	}
-
+#endif
 	goto out_unlock;
 }
 
@@ -4345,13 +4352,13 @@ static int __snapshot_destroy(struct btrfs_acid_snapshot * snap)
 		BTRFS_SUB_DBG(TX, "\tERROR: while destroying snap\n");
 		goto out;
 	}
-
+#if 0
 	ret = btrfs_acid_log_purge(snap);
 	if (ret < 0) {
 		BTRFS_SUB_DBG(TX, "\tERROR: while destroying snap's logs\n");
 		goto out;
 	}
-
+#endif
 	if (snap->path.name)
 		kfree(snap->path.name);
 	kfree(snap);

@@ -3877,6 +3877,6 @@ apply_txsv:
 	err = symexec_reconcile(symexec, txsv, snap);
 
 out:
-	symexec_destroy(symexec);
+//	symexec_destroy(symexec);
 	return 0;
 }
