@@ -118,7 +118,7 @@ static noinline void btrfs_drop_pages(struct page **pages, size_t num_pages)
  */
 static noinline int dirty_and_release_pages(struct btrfs_trans_handle *trans,
 				   struct btrfs_root *root,
-				   struct file *file,
+				   struct inode * inode,
 				   struct page **pages,
 				   size_t num_pages,
 				   loff_t pos,
@@ -126,7 +126,7 @@ static noinline int dirty_and_release_pages(struct btrfs_trans_handle *trans,
 {
 	int err = 0;
 	int i;
-	struct inode *inode = fdentry(file)->d_inode;
+//	struct inode *inode = fdentry(file)->d_inode;
 	u64 num_bytes;
 	u64 start_pos;
 	u64 end_of_last_block;
@@ -1038,7 +1038,7 @@ ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 		}
 
 		if (copied > 0) {
-			dirty_and_release_pages(NULL, root, file, pages,
+			dirty_and_release_pages(NULL, root, fdentry(file)->d_inode, pages,
 						dirty_pages, pos, copied);
 		}
 
