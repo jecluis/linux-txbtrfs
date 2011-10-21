@@ -766,7 +766,7 @@ out:
  * waits for data=ordered extents to finish before allowing the pages to be
  * modified.
  */
-static noinline int prepare_pages(struct btrfs_root *root, struct file *file,
+static noinline int prepare_pages(struct btrfs_root *root, struct inode * inode,
 			 struct page **pages, size_t num_pages,
 			 loff_t pos, unsigned long first_index,
 			 unsigned long last_index, size_t write_bytes)
@@ -774,7 +774,7 @@ static noinline int prepare_pages(struct btrfs_root *root, struct file *file,
 	struct extent_state *cached_state = NULL;
 	int i;
 	unsigned long index = pos >> PAGE_CACHE_SHIFT;
-	struct inode *inode = fdentry(file)->d_inode;
+//	struct inode *inode = fdentry(file)->d_inode;
 	int err = 0;
 	u64 start_pos;
 	u64 last_pos;
@@ -1014,7 +1014,7 @@ ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 		if (ret)
 			goto out;
 
-		ret = prepare_pages(root, file, pages, num_pages,
+		ret = prepare_pages(root, fdentry(file)->d_inode, pages, num_pages,
 				    pos, first_index, last_index,
 				    write_bytes);
 		if (ret) {
