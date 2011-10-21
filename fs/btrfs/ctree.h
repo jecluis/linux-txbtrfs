@@ -2702,6 +2702,7 @@ int btrfs_mark_extent_written(struct btrfs_trans_handle *trans,
 int btrfs_release_file(struct inode *inode, struct file *file);
 
 /* these methods became non-static so we can use them in txbtrfs. */
+noinline void btrfs_drop_pages(struct page **pages, size_t num_pages);
 ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 				    const struct iovec *iov,
 				    unsigned long nr_segs, loff_t pos);

@@ -91,7 +91,7 @@ static noinline int btrfs_copy_from_user(loff_t pos, int num_pages,
 /*
  * unlocks pages after btrfs_file_write is done with them
  */
-static noinline void btrfs_drop_pages(struct page **pages, size_t num_pages)
+noinline void btrfs_drop_pages(struct page **pages, size_t num_pages)
 {
 	size_t i;
 	for (i = 0; i < num_pages; i++) {
