@@ -33,29 +33,29 @@
 #ifdef __TXBTRFS_DEBUG__
 
 static inline void
-symexec_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
+slr_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
 {
 	if (!function || !file) {
-		printk(KERN_DEBUG "<SYM-EXEC> Missing parameters\n");
+		printk(KERN_DEBUG "<SLR-EXEC> Missing parameters\n");
 		return;
 	}
 
-	printk(KERN_DEBUG "<SYM-EXEC> (%s): parent: %llu, ino: %llu, name: %.*s\n",
+	printk(KERN_DEBUG "<SLR-EXEC> (%s): parent: %llu, ino: %llu, name: %.*s\n",
 			function,
 			file->parent_location.objectid, file->location.objectid,
 			file->name.len, file->name.name);
 }
 
-#define BTRFS_SYM_DBG(fmt, args...) \
-	printk(KERN_DEBUG "<SYM-EXEC> (%s): " fmt, __FUNCTION__, ## args)
-#define BTRFS_SYM_PRINT(fmt, args...) \
-	printk(KERN_DEBUG "<SYM-EXEC> " fmt, ## args)
-#define BTRFS_SYM_DBG_FILE(file_ptr) \
-	symexec_print_dbg_file(__FUNCTION__, file_ptr)
+#define BTRFS_SLR_DBG(fmt, args...) \
+	printk(KERN_DEBUG "<SLR-EXEC> (%s): " fmt, __FUNCTION__, ## args)
+#define BTRFS_SLR_PRINT(fmt, args...) \
+	printk(KERN_DEBUG "<SLR-EXEC> " fmt, ## args)
+#define BTRFS_SLR_DBG_FILE(file_ptr) \
+	slr_print_dbg_file(__FUNCTION__, file_ptr)
 #else
-#define BTRFS_SYM_DBG(fmt, args...) do {} while (0)
-#define BTRFS_SYM_PRINT(fmt, args...) do {} while (0)
-#define BTRFS_SYM_DBG_FILE(file_ptr) do {} while (0)
+#define BTRFS_SLR_DBG(fmt, args...) do {} while (0)
+#define BTRFS_SLR_PRINT(fmt, args...) do {} while (0)
+#define BTRFS_SLR_DBG_FILE(file_ptr) do {} while (0)
 #endif /* __TXBTRFS_DEBUG__ */
 
 /* this may very well be as stupid in the future as it is now, but let give
@@ -64,11 +64,11 @@ symexec_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
 #define ORIGIN_LOCAL	1
 #define ORIGIN_GLOBAL	2
 
-#define SYMEXEC_CONFLICT 	-EPERM
-#define SYMEXEC_OKAY		0
+#define SLR_CONFLICT 	-EPERM
+#define SLR_OKAY		0
 
-/* symexec tree's lists entry */
-struct symexec_entry
+/* slr tree's lists entry */
+struct slr_entry
 {
 	struct list_head list;
 	u64 ino;
@@ -80,29 +80,29 @@ struct symexec_entry
 	struct list_head reconcile_list;
 };
 
-/* symexec tree entry for any tree */
-struct symexec_tree_entry
+/* slr tree entry for any tree */
+struct slr_tree_entry
 {
 	struct rb_node rb_node;
 	u64 ino;
 };
 
-/* symexec tree entry for all trees mapping (inode -> list) */
-struct symexec_list_tree_entry
+/* slr tree entry for all trees mapping (inode -> list) */
+struct slr_list_tree_entry
 {
 	struct rb_node rb_node;
 	u64 ino;
 	struct list_head list;
 };
 
-struct symexec_nlinks_tree_entry
+struct slr_nlinks_tree_entry
 {
 	struct rb_node rb_node;
 	u64 ino;
 	unsigned int nlinks;
 };
 
-struct symexec_ino_map_entry
+struct slr_ino_map_entry
 {
 	struct rb_node rb_node;
 	u64 ino;
@@ -113,9 +113,9 @@ struct symexec_ino_map_entry
  * blocks affected by the truncate. May not be the best solution, but is the
  * one we have so far.
  *
- * "inherits" from symexec_entry
+ * "inherits" from slr_entry
  */
-struct symexec_blocks_truncate
+struct slr_blocks_truncate
 {
 	struct list_head list;
 	u64 ino;
@@ -126,33 +126,33 @@ struct symexec_blocks_truncate
 	struct list_head truncated_blocks_list;
 };
 
-struct symexec_interval_entry
+struct slr_interval_entry
 {
 	struct rb_node rb_node;
-	u64 start; // not pgoff_t to match symexec_tree_entry
+	u64 start; // not pgoff_t to match slr_tree_entry
 	pgoff_t end;
 };
 
 
-/* symexec control data structure */
-struct symexec_ctl
+/* slr control data structure */
+struct slr_ctl
 {
-	struct rb_root dir; 	// ino -> list<symexec_entry>
-	struct rb_root rem;		// ino -> list<symexec_entry>
+	struct rb_root dir; 	// ino -> list<slr_entry>
+	struct rb_root rem;		// ino -> list<slr_entry>
 	struct rb_root nlinks;	// ino -> unsigned int
-	struct rb_root blocks;	// ino -> list<symexec_entry>
+	struct rb_root blocks;	// ino -> list<slr_entry>
 	struct rb_root ino_map; // ino -> ino
 	struct rb_root dirty_dirs; // tree of 'ino'
 
 	struct list_head reconcile_log;
 
-	// snapshot to be validated in the end of symexec
+	// snapshot to be validated in the end of slr
 	struct btrfs_acid_snapshot * target_snap;
 };
 
-static void __symexec_destroy_entry(struct symexec_entry * entry);
-static struct symexec_entry *
-__symexec_create_entry(u64 ino, struct btrfs_acid_log_file * file,
+static void __slr_destroy_entry(struct slr_entry * entry);
+static struct slr_entry *
+__slr_create_entry(u64 ino, struct btrfs_acid_log_file * file,
 		struct btrfs_acid_log_entry * log_entry, u8 origin);
 
 /**
@@ -160,19 +160,19 @@ __symexec_create_entry(u64 ino, struct btrfs_acid_log_file * file,
  * shared by all their entries.
  */
 static struct rb_node * __tree_insert(struct rb_root * root, u64 ino,
-//		struct symexec_tree_entry * entry)
+//		struct slr_tree_entry * entry)
 		struct rb_node * node)
 {
 	struct rb_node ** p = &root->rb_node;
 	struct rb_node * parent = NULL;
-	struct symexec_tree_entry * p_entry;
+	struct slr_tree_entry * p_entry;
 
 	if (!root || !node)
 		return ERR_PTR(-EINVAL);
 
 	while (*p) {
 		parent = *p;
-		p_entry = rb_entry(parent, struct symexec_tree_entry, rb_node);
+		p_entry = rb_entry(parent, struct slr_tree_entry, rb_node);
 
 //		if (entry->ino < p_entry->ino)
 		if (ino < p_entry->ino)
@@ -198,13 +198,13 @@ static struct rb_node * __tree_insert(struct rb_root * root, u64 ino,
 static struct rb_node * __tree_search(struct rb_root * root, u64 ino)
 {
 	struct rb_node * node = root->rb_node;
-	struct symexec_tree_entry * entry;
+	struct slr_tree_entry * entry;
 
 	if (!root)
 		return ERR_PTR(-EINVAL);
 
 	while (node) {
-		entry = rb_entry(node, struct symexec_tree_entry, rb_node);
+		entry = rb_entry(node, struct slr_tree_entry, rb_node);
 
 		if (ino < entry->ino)
 			node = node->rb_left;
@@ -235,7 +235,7 @@ static struct list_head * __list_tree_get(struct rb_root * root, u64 ino)
 {
 	struct list_head * lst;
 	struct rb_node * node;
-	struct symexec_list_tree_entry * entry;
+	struct slr_list_tree_entry * entry;
 
 	if (!root)
 		return ERR_PTR(-EINVAL);
@@ -243,7 +243,7 @@ static struct list_head * __list_tree_get(struct rb_root * root, u64 ino)
 	lst = NULL;
 	node = __tree_search(root, ino);
 	if (node) {
-		entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+		entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
 		lst = &entry->list;
 	}
 
@@ -251,11 +251,11 @@ static struct list_head * __list_tree_get(struct rb_root * root, u64 ino)
 }
 
 static int __list_tree_put(struct rb_root * root, u64 ino,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 	struct rb_node * node;
 	struct list_head * lst;
-	struct symexec_list_tree_entry * list_entry;
+	struct slr_list_tree_entry * list_entry;
 
 	if (!root || !entry)
 		return -EINVAL;
@@ -299,12 +299,12 @@ static int __list_tree_put(struct rb_root * root, u64 ino,
  * lookup any file with the same @name, within the same @parent, despite its
  * inode number.
  */
-static struct symexec_entry *
+static struct slr_entry *
 __list_tree_lookup_file(struct rb_root * root, u64 key, u64 ino,
 		struct qstr * name)
 {
 	struct list_head * lst;
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	int found = 0;
 
 	if (!root || !name)
@@ -324,7 +324,7 @@ __list_tree_lookup_file(struct rb_root * root, u64 key, u64 ino,
 		if (((ino != 0) && (entry->ino != ino))
 				|| (entry->file->name.hash != name->hash)
 				|| (entry->file->name.len != name->len)) {
-			BTRFS_SYM_PRINT("k: %llu, i: %llu, %.*s (h: %u) "
+			BTRFS_SLR_PRINT("k: %llu, i: %llu, %.*s (h: %u) "
 					"!= k: %llu, i: %llu, n: %.*s (h: %u)\n",
 					key, ino, name->len, name->name, name->hash,
 					key, entry->ino, entry->file->name.len,
@@ -339,7 +339,7 @@ __list_tree_lookup_file(struct rb_root * root, u64 key, u64 ino,
 	}
 
 	if (!found) {
-		BTRFS_SYM_DBG("Unable to find ino %llu '%.*s' in key %llu\n",
+		BTRFS_SLR_DBG("Unable to find ino %llu '%.*s' in key %llu\n",
 				ino, name->len, name->name, key);
 		return NULL;
 	}
@@ -348,15 +348,15 @@ __list_tree_lookup_file(struct rb_root * root, u64 key, u64 ino,
 }
 
 /**
- * symexec_ -- put something into an inode map.
+ * slr_ -- put something into an inode map.
  * @returns: 0 if successful; < 0 otherwise.
  */
-static int symexec_ino_map_put(struct symexec_ctl * symexec, u64 key, u64 val)
+static int slr_ino_map_put(struct slr_ctl * slr, u64 key, u64 val)
 {
-	struct symexec_ino_map_entry * entry;
+	struct slr_ino_map_entry * entry;
 	struct rb_node * n;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
 	entry = kzalloc(sizeof(*entry), GFP_NOFS);
@@ -366,7 +366,7 @@ static int symexec_ino_map_put(struct symexec_ctl * symexec, u64 key, u64 val)
 	entry->ino = key;
 	entry->target_ino = val;
 
-	n = __tree_insert(&symexec->ino_map, key, &entry->rb_node);
+	n = __tree_insert(&slr->ino_map, key, &entry->rb_node);
 	if (IS_ERR(n)) {
 		kfree(entry);
 		return PTR_ERR(n);
@@ -375,33 +375,33 @@ static int symexec_ino_map_put(struct symexec_ctl * symexec, u64 key, u64 val)
 }
 
 /**
- * symexec_ino_map_get -- get something from an inode map.
+ * slr_ino_map_get -- get something from an inode map.
  * @returns: < 0 or error; 0 otherwise. If not found, val == 0.
  */
 //static int __ino_map_get(struct rb_root * root, u64 key, u64 * value)
-static int symexec_ino_map_get(struct symexec_ctl * symexec, u64 key, u64 * val)
+static int slr_ino_map_get(struct slr_ctl * slr, u64 key, u64 * val)
 {
 	struct rb_node * node;
-	struct symexec_ino_map_entry * entry;
+	struct slr_ino_map_entry * entry;
 
-	if (!symexec || !val)
+	if (!slr || !val)
 		return -EINVAL;
 
 	*val = 0;
 
-	node = __tree_search(&symexec->ino_map, key);
+	node = __tree_search(&slr->ino_map, key);
 	if (IS_ERR_OR_NULL(node)) {
 		return (IS_ERR(node) ? PTR_ERR(node) : 0);
 	}
 
-	entry = rb_entry(node, struct symexec_ino_map_entry, rb_node);
+	entry = rb_entry(node, struct slr_ino_map_entry, rb_node);
 	*val = entry->target_ino;
 
 	return 0;
 }
 
 /**
- * __symexec_get_mapped -- get a correct inode for an operation.
+ * __slr_get_mapped -- get a correct inode for an operation.
  *
  * This method performs a very specific task, which undocumented may leave
  * the reader both bewildered and thinking what an idiot we could possibly be.
@@ -417,14 +417,14 @@ static int symexec_ino_map_get(struct symexec_ctl * symexec, u64 key, u64 * val)
  * The method will return < 0 on error, zero if no mapping was found or one if
  * the value was successfully mapped to an existing value.
  */
-static int __symexec_get_mapped(struct symexec_ctl * symexec,
+static int __slr_get_mapped(struct slr_ctl * slr,
 		u64 key, u64 * val)
 {
 	int err;
-	if (!symexec || !val)
+	if (!slr || !val)
 		return -EINVAL;
 
-	err = symexec_ino_map_get(symexec, key, val);
+	err = slr_ino_map_get(slr, key, val);
 	if (err < 0)
 		return err;
 
@@ -437,12 +437,12 @@ static int __symexec_get_mapped(struct symexec_ctl * symexec,
 }
 
 static int
-symexec_nlinks_put(struct symexec_ctl * symexec, u64 key, unsigned int val)
+slr_nlinks_put(struct slr_ctl * slr, u64 key, unsigned int val)
 {
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 	struct rb_node * n;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
 	entry = kzalloc(sizeof(*entry), GFP_NOFS);
@@ -452,7 +452,7 @@ symexec_nlinks_put(struct symexec_ctl * symexec, u64 key, unsigned int val)
 	entry->ino = key;
 	entry->nlinks = val;
 
-	n = __tree_insert(&symexec->nlinks, key, &entry->rb_node);
+	n = __tree_insert(&slr->nlinks, key, &entry->rb_node);
 	if (IS_ERR(n)) {
 		kfree(entry);
 		return PTR_ERR(n);
@@ -460,45 +460,45 @@ symexec_nlinks_put(struct symexec_ctl * symexec, u64 key, unsigned int val)
 	return 0;
 }
 
-static struct symexec_nlinks_tree_entry *
-symexec_nlinks_get_entry(struct symexec_ctl * symexec, u64 key)
+static struct slr_nlinks_tree_entry *
+slr_nlinks_get_entry(struct slr_ctl * slr, u64 key)
 {
 	struct rb_node * node;
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 
-	if (!symexec)
+	if (!slr)
 		return ERR_PTR(-EINVAL);
 
-	node = __tree_search(&symexec->nlinks, key);
+	node = __tree_search(&slr->nlinks, key);
 	if (IS_ERR(node))
 		return ERR_CAST(node);
 	if (!node)
 		return NULL;
 
-	entry = rb_entry(node, struct symexec_nlinks_tree_entry, rb_node);
+	entry = rb_entry(node, struct slr_nlinks_tree_entry, rb_node);
 	return entry;
 }
 
 static int
-symexec_nlinks_get(struct symexec_ctl * symexec, u64 key, unsigned int * val)
+slr_nlinks_get(struct slr_ctl * slr, u64 key, unsigned int * val)
 {
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 
-	if (!symexec || !val)
+	if (!slr || !val)
 		return -EINVAL;
 	*val = 0;
 
 #if 0
 
-	node = __tree_search(&symexec->nlinks, key);
+	node = __tree_search(&slr->nlinks, key);
 	if (IS_ERR_OR_NULL(node)) {
 		return (IS_ERR(node) ? PTR_ERR(node) : -ENOENT);
 	}
 
-	entry = rb_entry(node, struct symexec_nlinks_tree_entry, rb_node);
+	entry = rb_entry(node, struct slr_nlinks_tree_entry, rb_node);
 #endif
 
-	entry = symexec_nlinks_get_entry(symexec, key);
+	entry = slr_nlinks_get_entry(slr, key);
 	if (IS_ERR(entry))
 		return PTR_ERR(entry);
 
@@ -508,49 +508,49 @@ symexec_nlinks_get(struct symexec_ctl * symexec, u64 key, unsigned int * val)
 	return 0;
 }
 
-static int symexec_nlinks_contains(struct symexec_ctl * symexec, u64 key)
+static int slr_nlinks_contains(struct slr_ctl * slr, u64 key)
 {
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
-	return (symexec_nlinks_get_entry(symexec, key) != NULL);
+	return (slr_nlinks_get_entry(slr, key) != NULL);
 }
 
-static int symexec_nlinks_inc(struct symexec_ctl * symexec, u64 key)
+static int slr_nlinks_inc(struct slr_ctl * slr, u64 key)
 {
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
 #if 0
-	node = __tree_search(&symexec->nlinks, key);
+	node = __tree_search(&slr->nlinks, key);
 	if (IS_ERR(node))
 		return PTR_ERR(node);
 	if (!node)
-		return symexec_nlinks_put(symexec, key, 1);
+		return slr_nlinks_put(slr, key, 1);
 
-	entry = rb_entry(node, struct symexec_nlinks_tree_entry, rb_node);
+	entry = rb_entry(node, struct slr_nlinks_tree_entry, rb_node);
 #endif
 
-	entry = symexec_nlinks_get_entry(symexec, key);
+	entry = slr_nlinks_get_entry(slr, key);
 	if (IS_ERR(entry))
 		return PTR_ERR(entry);
 	if (!entry)
-		return symexec_nlinks_put(symexec, key, 1);
+		return slr_nlinks_put(slr, key, 1);
 
 	entry->nlinks ++;
 
 	return 0;
 }
 
-static int symexec_nlinks_dec_return(struct symexec_ctl * symexec, u64 key)
+static int slr_nlinks_dec_return(struct slr_ctl * slr, u64 key)
 {
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
-	entry = symexec_nlinks_get_entry(symexec, key);
+	entry = slr_nlinks_get_entry(slr, key);
 	if (IS_ERR(entry))
 		return PTR_ERR(entry);
 	if (!entry)
@@ -562,24 +562,24 @@ static int symexec_nlinks_dec_return(struct symexec_ctl * symexec, u64 key)
 	return entry->nlinks;
 }
 
-static int symexec_nlinks_dec(struct symexec_ctl * symexec, u64 key)
+static int slr_nlinks_dec(struct slr_ctl * slr, u64 key)
 {
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
 #if 0
-	node = __tree_search(&symexec->nlinks, key);
+	node = __tree_search(&slr->nlinks, key);
 	if (IS_ERR(node))
 		return PTR_ERR(node);
 	if (!node)
-		return symexec_nlinks_put(symexec, key, 1);
+		return slr_nlinks_put(slr, key, 1);
 
-	entry = rb_entry(node, struct symexec_nlinks_tree_entry, rb_node);
+	entry = rb_entry(node, struct slr_nlinks_tree_entry, rb_node);
 #endif
 
-	entry = symexec_nlinks_get_entry(symexec, key);
+	entry = slr_nlinks_get_entry(slr, key);
 	if (IS_ERR(entry))
 		return PTR_ERR(entry);
 	if (!entry)
@@ -591,43 +591,43 @@ static int symexec_nlinks_dec(struct symexec_ctl * symexec, u64 key)
 	return 0;
 }
 
-static int symexec_dir_put(struct symexec_ctl * symexec, u64 key,
-		struct symexec_entry * entry)
+static int slr_dir_put(struct slr_ctl * slr, u64 key,
+		struct slr_entry * entry)
 {
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
-	return __list_tree_put(&symexec->dir, key, entry);
+	return __list_tree_put(&slr->dir, key, entry);
 }
 
 /**
- * symexec_dir_lookup_file - Looks up a file in the dir tree.
+ * slr_dir_lookup_file - Looks up a file in the dir tree.
  *
  * This method is just a wrapper for __list_tree_lookup_file, just so we
  * don't have to specify the tree we want to access when we clearly want the
  * dir tree.
  */
-static struct symexec_entry *
-symexec_dir_lookup_file(struct symexec_ctl * symexec, u64 parent, u64 ino,
+static struct slr_entry *
+slr_dir_lookup_file(struct slr_ctl * slr, u64 parent, u64 ino,
 		struct qstr * name)
 {
-	if (!symexec || !name)
+	if (!slr || !name)
 		return ERR_PTR(-EINVAL);
-	return __list_tree_lookup_file(&symexec->dir, parent, ino, name);
+	return __list_tree_lookup_file(&slr->dir, parent, ino, name);
 }
 
-static int symexec_dir_remove(struct symexec_ctl * symexec, u64 parent,
+static int slr_dir_remove(struct slr_ctl * slr, u64 parent,
 		u64 ino, struct qstr * name)
 {
 #if 0
 	struct list_head * lst;
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	int found = 0;
 
-	if (!symexec || !name)
+	if (!slr || !name)
 		return -EINVAL;
 
-	lst = __list_tree_get(&symexec->dir, parent);
+	lst = __list_tree_get(&slr->dir, parent);
 	if (IS_ERR(lst))
 		return PTR_ERR(lst);
 	else if (!lst)
@@ -648,46 +648,46 @@ static int symexec_dir_remove(struct symexec_ctl * symexec, u64 parent,
 	}
 
 	if (!found) {
-		BTRFS_SYM_DBG("Unable to find ino %llu '%.*s' in parent %llu\n",
+		BTRFS_SLR_DBG("Unable to find ino %llu '%.*s' in parent %llu\n",
 				ino, name->len, name->name, parent);
 		return -ENOENT;
 	}
 #endif
 
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 
-	if (!symexec || !name)
+	if (!slr || !name)
 		return -EINVAL;
 
-	entry = symexec_dir_lookup_file(symexec, parent, ino, name);
+	entry = slr_dir_lookup_file(slr, parent, ino, name);
 	if (IS_ERR(entry))
 		return PTR_ERR(entry);
 	if (!entry)
 		return -ENOENT;
 
 	list_del(&entry->list);
-	__symexec_destroy_entry(entry);
+	__slr_destroy_entry(entry);
 
 	return 0;
 }
 
 /**
- * symexec_dir_match_file - Checks if any file in the symbolic execution tree
+ * slr_dir_match_file - Checks if any file in the symbolic execution tree
  * matches @file.
  *
  * @return: 0 if no match was found, 1 if a match was found, or < 0 on error.
  */
-static int symexec_dir_match_file(struct symexec_ctl * symexec,
+static int slr_dir_match_file(struct slr_ctl * slr,
 		u64 parent, u64 ino, struct qstr * name, u8 * origin)
 {
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 
-	if (!symexec || !name)
+	if (!slr || !name)
 		return -EINVAL;
 
-	entry = symexec_dir_lookup_file(symexec, parent, ino, name);
+	entry = slr_dir_lookup_file(slr, parent, ino, name);
 	if (IS_ERR(entry)) {
-		BTRFS_SYM_DBG("DIR-FIND-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("DIR-FIND-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, name->len, name->name);
 		return PTR_ERR(entry);
 	} else if (entry) {
@@ -701,42 +701,42 @@ static int symexec_dir_match_file(struct symexec_ctl * symexec,
 	return 0;
 }
 
-static int symexec_rem_put(struct symexec_ctl * symexec, u64 key,
-		struct symexec_entry * entry)
+static int slr_rem_put(struct slr_ctl * slr, u64 key,
+		struct slr_entry * entry)
 {
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
-	return __list_tree_put(&symexec->rem, key, entry);
+	return __list_tree_put(&slr->rem, key, entry);
 }
 
-static struct list_head * symexec_rem_get(struct symexec_ctl * symexec, u64 ino)
+static struct list_head * slr_rem_get(struct slr_ctl * slr, u64 ino)
 {
-	if (!symexec)
+	if (!slr)
 		return ERR_PTR(-EINVAL);
 
-	return __list_tree_get(&symexec->rem, ino);
+	return __list_tree_get(&slr->rem, ino);
 }
 
-static struct symexec_entry *
-symexec_rem_lookup_file(struct symexec_ctl * symexec, u64 key, u64 ino,
+static struct slr_entry *
+slr_rem_lookup_file(struct slr_ctl * slr, u64 key, u64 ino,
 		struct qstr * name)
 {
-	if (!symexec || !name)
+	if (!slr || !name)
 		return ERR_PTR(-EINVAL);
-	return __list_tree_lookup_file(&symexec->rem, key, ino, name);
+	return __list_tree_lookup_file(&slr->rem, key, ino, name);
 }
 
-static int symexec_rem_match_file(struct symexec_ctl * symexec, u64 key,
+static int slr_rem_match_file(struct slr_ctl * slr, u64 key,
 		u64 ino, struct qstr * name, u8 * origin)
 {
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 
-	if (!symexec || !name)
+	if (!slr || !name)
 		return -EINVAL;
 
-	entry = symexec_rem_lookup_file(symexec, key, ino, name);
+	entry = slr_rem_lookup_file(slr, key, ino, name);
 	if (IS_ERR(entry)) {
-		BTRFS_SYM_DBG("REM-LOOKUP-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-LOOKUP-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				key, ino, name->len, name->name);
 		return PTR_ERR(entry);
 	} else if (entry) {
@@ -748,46 +748,46 @@ static int symexec_rem_match_file(struct symexec_ctl * symexec, u64 key,
 }
 
 
-static int symexec_blocks_put(struct symexec_ctl * symexec, u64 ino,
+static int slr_blocks_put(struct slr_ctl * slr, u64 ino,
 		struct btrfs_acid_log_rw * entry, u8 origin)
 {
-	struct symexec_entry * sym_entry;
+	struct slr_entry * sym_entry;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
-	sym_entry = __symexec_create_entry(ino, &entry->file,
+	sym_entry = __slr_create_entry(ino, &entry->file,
 			(void *) entry, origin);
 	if (IS_ERR(sym_entry))
 		return PTR_ERR(sym_entry);
 
-	return __list_tree_put(&symexec->blocks, ino, sym_entry);
+	return __list_tree_put(&slr->blocks, ino, sym_entry);
 }
 
 static struct list_head *
-symexec_blocks_get(struct symexec_ctl * symexec, u64 ino)
+slr_blocks_get(struct slr_ctl * slr, u64 ino)
 {
-	if (!symexec)
+	if (!slr)
 		return ERR_PTR(-EINVAL);
 
-	return __list_tree_get(&symexec->blocks, ino);
+	return __list_tree_get(&slr->blocks, ino);
 }
 
 /**
- * symexec_dirty_dir_put - Adds an inode value to the dirty dir tree.
+ * slr_dirty_dir_put - Adds an inode value to the dirty dir tree.
  *
  * An entry in this tree means that some creation or removal operation was
  * made on the directory with inode value @ino.
  */
-static int symexec_dirty_dir_put(struct symexec_ctl * symexec, u64 ino)
+static int slr_dirty_dir_put(struct slr_ctl * slr, u64 ino)
 {
-	struct symexec_tree_entry * entry;
+	struct slr_tree_entry * entry;
 	struct rb_node * n;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
-	n = __tree_search(&symexec->dirty_dirs, ino);
+	n = __tree_search(&slr->dirty_dirs, ino);
 	if (IS_ERR(n))
 		return PTR_ERR(n);
 	else if (n != NULL) {
@@ -800,7 +800,7 @@ static int symexec_dirty_dir_put(struct symexec_ctl * symexec, u64 ino)
 		return -ENOMEM;
 
 	entry->ino = ino;
-	n = __tree_insert(&symexec->dirty_dirs, ino, &entry->rb_node);
+	n = __tree_insert(&slr->dirty_dirs, ino, &entry->rb_node);
 	if (IS_ERR(n)) {
 		kfree(entry);
 		return PTR_ERR(n);
@@ -809,14 +809,14 @@ out:
 	return 0;
 }
 
-static int symexec_dirty_dir_contains(struct symexec_ctl * symexec, u64 ino)
+static int slr_dirty_dir_contains(struct slr_ctl * slr, u64 ino)
 {
 	struct rb_node * n;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
-	n = __tree_search(&symexec->dirty_dirs, ino);
+	n = __tree_search(&slr->dirty_dirs, ino);
 	if (IS_ERR(n))
 		return PTR_ERR(n);
 	else if (!n)
@@ -825,143 +825,143 @@ static int symexec_dirty_dir_contains(struct symexec_ctl * symexec, u64 ino)
 	return 1;
 }
 
-static int symexec_reconcile_log_put(struct symexec_ctl * symexec,
+static int slr_reconcile_log_put(struct slr_ctl * slr,
 		u64 ino, struct btrfs_acid_log_file * file,
 		struct btrfs_acid_log_entry * entry)
 {
-	struct symexec_entry * sym_entry;
+	struct slr_entry * sym_entry;
 
-	if (!symexec || !file || !entry)
+	if (!slr || !file || !entry)
 		return -EINVAL;
 
-	sym_entry = __symexec_create_entry(ino, file, entry, ORIGIN_GLOBAL);
+	sym_entry = __slr_create_entry(ino, file, entry, ORIGIN_GLOBAL);
 	if (IS_ERR(sym_entry))
 		return PTR_ERR(sym_entry);
 
-	list_add_tail(&sym_entry->reconcile_list, &symexec->reconcile_log);
+	list_add_tail(&sym_entry->reconcile_list, &slr->reconcile_log);
 
 	return 0;
 }
 
 /**
- * symexec_create -- creates & initializes a symbolic execution.
+ * slr_create -- creates & initializes a symbolic execution.
  */
-static struct symexec_ctl * symexec_create(struct btrfs_acid_snapshot * snap)
+static struct slr_ctl * slr_create(struct btrfs_acid_snapshot * snap)
 {
-	struct symexec_ctl * symexec;
+	struct slr_ctl * slr;
 
 	if (!snap || !snap->root)
 		return ERR_PTR(-EINVAL);
 
-	symexec = kzalloc(sizeof(*symexec), GFP_NOFS);
-	if (!symexec)
+	slr = kzalloc(sizeof(*slr), GFP_NOFS);
+	if (!slr)
 		return ERR_PTR(-ENOMEM);
 
-	symexec->dir = RB_ROOT;
-	symexec->rem = RB_ROOT;
-	symexec->nlinks = RB_ROOT;
-	symexec->blocks = RB_ROOT;
-	symexec->ino_map = RB_ROOT;
-	symexec->dirty_dirs = RB_ROOT;
+	slr->dir = RB_ROOT;
+	slr->rem = RB_ROOT;
+	slr->nlinks = RB_ROOT;
+	slr->blocks = RB_ROOT;
+	slr->ino_map = RB_ROOT;
+	slr->dirty_dirs = RB_ROOT;
 
-	INIT_LIST_HEAD(&symexec->reconcile_log);
+	INIT_LIST_HEAD(&slr->reconcile_log);
 
-	symexec->target_snap = snap;
+	slr->target_snap = snap;
 
-	return symexec;
+	return slr;
 }
 
-static void __symexec_destroy_tree_nlinks(struct symexec_ctl * symexec)
+static void __slr_destroy_tree_nlinks(struct slr_ctl * slr)
 {
 	struct rb_node * node, * next_node;
-	struct symexec_nlinks_tree_entry * entry;
+	struct slr_nlinks_tree_entry * entry;
 
-	for (node = rb_first(&symexec->nlinks); node; ) {
+	for (node = rb_first(&slr->nlinks); node; ) {
 		next_node = rb_next(node);
-		entry = rb_entry(node, struct symexec_nlinks_tree_entry, rb_node);
-		rb_erase(node, &symexec->nlinks);
+		entry = rb_entry(node, struct slr_nlinks_tree_entry, rb_node);
+		rb_erase(node, &slr->nlinks);
 		kfree(entry);
 		node = next_node;
 	}
 }
 
-static void __symexec_destroy_tree_ino(struct symexec_ctl * symexec)
+static void __slr_destroy_tree_ino(struct slr_ctl * slr)
 {
 	struct rb_node * node, * next_node;
-	struct symexec_ino_map_entry * entry;
+	struct slr_ino_map_entry * entry;
 
-	for (node = rb_first(&symexec->ino_map); node; ) {
+	for (node = rb_first(&slr->ino_map); node; ) {
 		next_node = rb_next(node);
-		entry = rb_entry(node, struct symexec_ino_map_entry, rb_node);
-		rb_erase(node, &symexec->ino_map);
+		entry = rb_entry(node, struct slr_ino_map_entry, rb_node);
+		rb_erase(node, &slr->ino_map);
 		kfree(entry);
 		node = next_node;
 	}
 }
 
-static void __symexec_destroy_tree_dirty_dirs(struct symexec_ctl * symexec)
+static void __slr_destroy_tree_dirty_dirs(struct slr_ctl * slr)
 {
 	struct rb_node * node, * next_node;
-	struct symexec_tree_entry * entry;
+	struct slr_tree_entry * entry;
 
-	for (node = rb_first(&symexec->dirty_dirs); node; ) {
+	for (node = rb_first(&slr->dirty_dirs); node; ) {
 		next_node = rb_next(node);
-		entry = rb_entry(node, struct symexec_tree_entry, rb_node);
-		rb_erase(node, &symexec->nlinks);
+		entry = rb_entry(node, struct slr_tree_entry, rb_node);
+		rb_erase(node, &slr->nlinks);
 		kfree(entry);
 		node = next_node;
 	}
 }
 
-static void __symexec_destroy_list(struct list_head * list)
+static void __slr_destroy_list(struct list_head * list)
 {
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	struct list_head * lst, * ptr;
 
 	list_for_each_safe(lst, ptr, list) {
-		entry = list_entry(lst, struct symexec_entry, list);
+		entry = list_entry(lst, struct slr_entry, list);
 		list_del(lst);
 		kfree(entry);
 	}
 }
 
-static void __symexec_destroy_list_tree(struct rb_root * root)
+static void __slr_destroy_list_tree(struct rb_root * root)
 {
 	struct rb_node * node, * next_node;
-	struct symexec_list_tree_entry * list_entry;
+	struct slr_list_tree_entry * list_entry;
 
 	for (node = rb_first(root); node; ) {
 		next_node = rb_next(node);
-		list_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+		list_entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
 		rb_erase(node, root);
 
-		__symexec_destroy_list(&list_entry->list);
+		__slr_destroy_list(&list_entry->list);
 
 		kfree(list_entry);
 		node = next_node;
 	}
 }
 
-static void symexec_destroy(struct symexec_ctl * symexec)
+static void slr_destroy(struct slr_ctl * slr)
 {
-	if (!symexec)
+	if (!slr)
 		return;
 
-	__symexec_destroy_tree_nlinks(symexec);
-	__symexec_destroy_tree_ino(symexec);
-	__symexec_destroy_tree_dirty_dirs(symexec);
+	__slr_destroy_tree_nlinks(slr);
+	__slr_destroy_tree_ino(slr);
+	__slr_destroy_tree_dirty_dirs(slr);
 
-	__symexec_destroy_list_tree(&symexec->blocks);
-	__symexec_destroy_list_tree(&symexec->dir);
-	__symexec_destroy_list_tree(&symexec->rem);
+	__slr_destroy_list_tree(&slr->blocks);
+	__slr_destroy_list_tree(&slr->dir);
+	__slr_destroy_list_tree(&slr->rem);
 
-	__symexec_destroy_list(&symexec->reconcile_log);
+	__slr_destroy_list(&slr->reconcile_log);
 }
 
-static void __print_dir_list(struct symexec_ctl * symexec,
+static void __print_dir_list(struct slr_ctl * slr,
 		struct list_head * lst)
 {
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	u64 parent, ino;
 	unsigned int nlink = 31337; /* this is just a control value */
 	int err;
@@ -974,21 +974,21 @@ static void __print_dir_list(struct symexec_ctl * symexec,
 		parent = entry->file->parent_location.objectid;
 		ino = entry->file->location.objectid;
 
-		err = __symexec_get_mapped(symexec, parent, &parent);
+		err = __slr_get_mapped(slr, parent, &parent);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring parent map for %llu", entry->ino);
+			BTRFS_SLR_PRINT("ERROR acquiring parent map for %llu", entry->ino);
 		}
 
-		err = __symexec_get_mapped(symexec, ino, &ino);
+		err = __slr_get_mapped(slr, ino, &ino);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring map for %llu", entry->ino);
+			BTRFS_SLR_PRINT("ERROR acquiring map for %llu", entry->ino);
 		}
 
-		err = symexec_nlinks_get(symexec, ino, &nlink);
+		err = slr_nlinks_get(slr, ino, &nlink);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring nlink for %llu", ino);
+			BTRFS_SLR_PRINT("ERROR acquiring nlink for %llu", ino);
 		}
-		BTRFS_SYM_PRINT("\t%sparent: %llu, ino: %llu, name: %.*s, nlink: %u, "
+		BTRFS_SLR_PRINT("\t%sparent: %llu, ino: %llu, name: %.*s, nlink: %u, "
 				"type: %s\n",
 				(entry->invalidated ? "(INVALID) " : ""),
 				parent, ino,
@@ -997,11 +997,11 @@ static void __print_dir_list(struct symexec_ctl * symexec,
 	}
 }
 
-static void __print_blocks_list(struct symexec_ctl * symexec,
+static void __print_blocks_list(struct slr_ctl * slr,
 		struct list_head * lst)
 {
-	struct symexec_entry * entry;
-	struct symexec_blocks_truncate * trunc;
+	struct slr_entry * entry;
+	struct slr_blocks_truncate * trunc;
 	u64 parent, ino;
 	unsigned int nlink = 31337; /* this is just a control value */
 	int err;
@@ -1014,164 +1014,164 @@ static void __print_blocks_list(struct symexec_ctl * symexec,
 		parent = entry->file->parent_location.objectid;
 		ino = entry->file->location.objectid;
 
-		err = __symexec_get_mapped(symexec, parent, &parent);
+		err = __slr_get_mapped(slr, parent, &parent);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring parent map for %llu", entry->ino);
+			BTRFS_SLR_PRINT("ERROR acquiring parent map for %llu", entry->ino);
 		}
 
-		err = __symexec_get_mapped(symexec, ino, &ino);
+		err = __slr_get_mapped(slr, ino, &ino);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring map for %llu", entry->ino);
+			BTRFS_SLR_PRINT("ERROR acquiring map for %llu", entry->ino);
 		}
 
-		err = symexec_nlinks_get(symexec, ino, &nlink);
+		err = slr_nlinks_get(slr, ino, &nlink);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring nlink for %llu", ino);
+			BTRFS_SLR_PRINT("ERROR acquiring nlink for %llu", ino);
 		}
 
-		BTRFS_SYM_PRINT("\tparent: %llu, ino: %llu, name: %.*s, nlink: %u"
+		BTRFS_SLR_PRINT("\tparent: %llu, ino: %llu, name: %.*s, nlink: %u"
 				", type: %s\n",
 				parent, ino,
 				entry->file->name.len, entry->file->name.name, nlink,
 				btrfs_acid_log_type_to_str(entry->log_entry->type));
 
 		if (entry->log_entry->type == BTRFS_ACID_LOG_TRUNCATE) {
-			trunc = (struct symexec_blocks_truncate *) entry;
+			trunc = (struct slr_blocks_truncate *) entry;
 			if (list_empty(&trunc->truncated_blocks_list)) {
-				BTRFS_SYM_PRINT("\tNo blocks truncated\n");
+				BTRFS_SLR_PRINT("\tNo blocks truncated\n");
 				continue;
 			}
-			BTRFS_SYM_PRINT("\tTruncated:\n");
-			__print_dir_list(symexec, &trunc->truncated_blocks_list);
+			BTRFS_SLR_PRINT("\tTruncated:\n");
+			__print_dir_list(slr, &trunc->truncated_blocks_list);
 		}
 	}
 }
 
-static void symexec_print_dir_tree(struct symexec_ctl * symexec)
+static void slr_print_dir_tree(struct slr_ctl * slr)
 {
 	struct rb_node * node;
-	struct symexec_list_tree_entry * entry;
+	struct slr_list_tree_entry * entry;
 
-	WARN_ON(!symexec);
-	if (!symexec)
+	WARN_ON(!slr);
+	if (!slr)
 		return;
 
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
-	BTRFS_SYM_PRINT("  DIR tree (%d)\n", symexec->target_snap->owner_pid);
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("  DIR tree (%d)\n", slr->target_snap->owner_pid);
 
-	for (node = rb_first(&symexec->dir); node; node = rb_next(node)) {
-		entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
-		BTRFS_SYM_PRINT("ino: %llu\n", entry->ino);
-		__print_dir_list(symexec, &entry->list);
+	for (node = rb_first(&slr->dir); node; node = rb_next(node)) {
+		entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
+		BTRFS_SLR_PRINT("ino: %llu\n", entry->ino);
+		__print_dir_list(slr, &entry->list);
 	}
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
 }
 
-static void symexec_print_rem_tree(struct symexec_ctl * symexec)
+static void slr_print_rem_tree(struct slr_ctl * slr)
 {
 	struct rb_node * node;
-	struct symexec_list_tree_entry * entry;
+	struct slr_list_tree_entry * entry;
 
-	WARN_ON(!symexec);
-	if (!symexec)
+	WARN_ON(!slr);
+	if (!slr)
 		return;
 
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
-	BTRFS_SYM_PRINT("  REM tree (%d)\n", symexec->target_snap->owner_pid);
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("  REM tree (%d)\n", slr->target_snap->owner_pid);
 
-	for (node = rb_first(&symexec->rem); node; node = rb_next(node)) {
-		entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
-		BTRFS_SYM_PRINT("ino: %llu\n", entry->ino);
-		__print_dir_list(symexec, &entry->list);
+	for (node = rb_first(&slr->rem); node; node = rb_next(node)) {
+		entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
+		BTRFS_SLR_PRINT("ino: %llu\n", entry->ino);
+		__print_dir_list(slr, &entry->list);
 	}
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
 }
 
-static void symexec_print_blocks_tree(struct symexec_ctl * symexec)
+static void slr_print_blocks_tree(struct slr_ctl * slr)
 {
 	struct rb_node * node;
-	struct symexec_list_tree_entry * entry;
+	struct slr_list_tree_entry * entry;
 
-	WARN_ON(!symexec);
-	if (!symexec)
+	WARN_ON(!slr);
+	if (!slr)
 		return;
 
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
-	BTRFS_SYM_PRINT("  BLOCKS tree (%d)\n", symexec->target_snap->owner_pid);
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("  BLOCKS tree (%d)\n", slr->target_snap->owner_pid);
 
-	for (node = rb_first(&symexec->blocks); node; node = rb_next(node)) {
-		entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
-		BTRFS_SYM_PRINT("ino: %llu\n", entry->ino);
-		__print_blocks_list(symexec, &entry->list);
+	for (node = rb_first(&slr->blocks); node; node = rb_next(node)) {
+		entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
+		BTRFS_SLR_PRINT("ino: %llu\n", entry->ino);
+		__print_blocks_list(slr, &entry->list);
 	}
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
 }
 
-static void symexec_print_dirty_dirs_tree(struct symexec_ctl * symexec)
+static void slr_print_dirty_dirs_tree(struct slr_ctl * slr)
 {
 	struct rb_node * node;
-	struct symexec_tree_entry * entry;
+	struct slr_tree_entry * entry;
 
-	WARN_ON(!symexec);
-	if (!symexec)
+	WARN_ON(!slr);
+	if (!slr)
 		return;
 
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
-	BTRFS_SYM_PRINT("  Dirty Dirs Tree (%d)\n",
-			symexec->target_snap->owner_pid);
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("  Dirty Dirs Tree (%d)\n",
+			slr->target_snap->owner_pid);
 
-	for (node = rb_first(&symexec->dirty_dirs); node; node = rb_next(node)) {
-		entry = rb_entry(node, struct symexec_tree_entry, rb_node);
-		BTRFS_SYM_PRINT("ino: %llu\n", entry->ino);
+	for (node = rb_first(&slr->dirty_dirs); node; node = rb_next(node)) {
+		entry = rb_entry(node, struct slr_tree_entry, rb_node);
+		BTRFS_SLR_PRINT("ino: %llu\n", entry->ino);
 	}
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
 }
 
-static void symexec_print_reconcile_log(struct symexec_ctl * symexec)
+static void slr_print_reconcile_log(struct slr_ctl * slr)
 {
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	u64 parent, ino;
 	unsigned int nlink = 31337; /* this is just a control value */
 	int err;
 
-	WARN_ON(!symexec);
-	if (!symexec)
+	WARN_ON(!slr);
+	if (!slr)
 		return;
 
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
-	BTRFS_SYM_PRINT("  Reconcile Log (%d)\n",
-			symexec->target_snap->owner_pid);
-	list_for_each_entry(entry, &symexec->reconcile_log, reconcile_list) {
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("  Reconcile Log (%d)\n",
+			slr->target_snap->owner_pid);
+	list_for_each_entry(entry, &slr->reconcile_log, reconcile_list) {
 		parent = entry->file->parent_location.objectid;
 		ino = entry->file->location.objectid;
 
-		err = __symexec_get_mapped(symexec, parent, &parent);
+		err = __slr_get_mapped(slr, parent, &parent);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring parent map for %llu", entry->ino);
+			BTRFS_SLR_PRINT("ERROR acquiring parent map for %llu", entry->ino);
 		}
 
-		err = __symexec_get_mapped(symexec, ino, &ino);
+		err = __slr_get_mapped(slr, ino, &ino);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring map for %llu", entry->ino);
+			BTRFS_SLR_PRINT("ERROR acquiring map for %llu", entry->ino);
 		}
 
-		err = symexec_nlinks_get(symexec, ino, &nlink);
+		err = slr_nlinks_get(slr, ino, &nlink);
 		if (err < 0) {
-			BTRFS_SYM_PRINT("ERROR acquiring nlink for %llu", ino);
+			BTRFS_SLR_PRINT("ERROR acquiring nlink for %llu", ino);
 		}
-		BTRFS_SYM_PRINT("\t%sparent: %llu, ino: %llu, name: %.*s, nlink: %u, "
+		BTRFS_SLR_PRINT("\t%sparent: %llu, ino: %llu, name: %.*s, nlink: %u, "
 				"type: %s\n",
 				(entry->invalidated ? "(INVALID) " : ""),
 				parent, ino,
 				entry->file->name.len, entry->file->name.name, nlink,
 				btrfs_acid_log_type_to_str(entry->log_entry->type));
 	}
-	BTRFS_SYM_PRINT("----------------------------------------------\n");
+	BTRFS_SLR_PRINT("----------------------------------------------\n");
 }
 
-static void __symexec_destroy_entry(struct symexec_entry * entry);
+static void __slr_destroy_entry(struct slr_entry * entry);
 
-static int __symexec_fill_entry(struct symexec_entry * entry, u64 ino,
+static int __slr_fill_entry(struct slr_entry * entry, u64 ino,
 		struct btrfs_acid_log_file * file,
 		struct btrfs_acid_log_entry * log_entry, u8 origin)
 {
@@ -1185,11 +1185,11 @@ static int __symexec_fill_entry(struct symexec_entry * entry, u64 ino,
 	return 0;
 }
 
-static struct symexec_entry *
-__symexec_create_entry(u64 ino, struct btrfs_acid_log_file * file,
+static struct slr_entry *
+__slr_create_entry(u64 ino, struct btrfs_acid_log_file * file,
 		struct btrfs_acid_log_entry * log_entry, u8 origin)
 {
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	int err;
 
 	if (!file || !log_entry)
@@ -1205,7 +1205,7 @@ __symexec_create_entry(u64 ino, struct btrfs_acid_log_file * file,
 	entry->origin = origin;
 #endif
 
-	err = __symexec_fill_entry(entry, ino, file, log_entry, origin);
+	err = __slr_fill_entry(entry, ino, file, log_entry, origin);
 	if (err < 0) {
 		kfree(entry);
 		return ERR_PTR(err);
@@ -1214,21 +1214,21 @@ __symexec_create_entry(u64 ino, struct btrfs_acid_log_file * file,
 	return entry;
 }
 
-static void __symexec_destroy_entry(struct symexec_entry * entry)
+static void __slr_destroy_entry(struct slr_entry * entry)
 {
 	if (entry) {
 		kfree(entry);
 	}
 }
 
-static int __symexec_apply_create(struct symexec_ctl * symexec,
+static int __slr_apply_create(struct slr_ctl * slr,
 		struct btrfs_acid_log_create * entry)
 {
 	int err;
 	u64 objectid, parent;
-	struct symexec_entry * symexec_entry;
+	struct slr_entry * slr_entry;
 
-	if (!symexec || !entry
+	if (!slr || !entry
 			|| ((entry->type != BTRFS_ACID_LOG_CREATE)
 					&& (entry->type != BTRFS_ACID_LOG_MKDIR)
 					&& (entry->type != BTRFS_ACID_LOG_SYMLINK)
@@ -1238,9 +1238,9 @@ static int __symexec_apply_create(struct symexec_ctl * symexec,
 	/* look for the entry's parent inode in the inode map */
 #if 0
 	entry_parent_ino = entry->file.parent_location.objectid;
-	err = symexec_ino_map_get(symexec, entry_parent_ino, &parent_ino);
+	err = slr_ino_map_get(slr, entry_parent_ino, &parent_ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("parent ino: %llu; entry parent ino: %llu\n",
+		BTRFS_SLR_DBG("parent ino: %llu; entry parent ino: %llu\n",
 				parent_ino, entry_parent_ino);
 		return -EINVAL;
 	}
@@ -1249,62 +1249,62 @@ static int __symexec_apply_create(struct symexec_ctl * symexec,
 		parent_ino = entry_parent_ino;
 #endif
 
-	err = __symexec_get_mapped(symexec, entry->file.parent_location.objectid,
+	err = __slr_get_mapped(slr, entry->file.parent_location.objectid,
 			&parent);
 	if (err < 0) {
-		BTRFS_SYM_DBG("parent ino: %llu; entry parent ino: %llu\n",
+		BTRFS_SLR_DBG("parent ino: %llu; entry parent ino: %llu\n",
 				parent, entry->file.parent_location.objectid);
 		return err;
 	}
 
-	err = btrfs_find_free_objectid(NULL, symexec->target_snap->root,
+	err = btrfs_find_free_objectid(NULL, slr->target_snap->root,
 			parent, &objectid);
 	if (err) {
-		BTRFS_SYM_DBG("objid: %llu; parent ino: %llu; entry parent ino: %llu\n",
+		BTRFS_SLR_DBG("objid: %llu; parent ino: %llu; entry parent ino: %llu\n",
 				objectid, parent, entry->file.parent_location.objectid);
 		return err;
 	}
 
-	err = symexec_reconcile_log_put(symexec, objectid,
+	err = slr_reconcile_log_put(slr, objectid,
 			&entry->file, (void *) entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LOG-PUT > Error\n");
+		BTRFS_SLR_DBG("LOG-PUT > Error\n");
 		return err;
 	}
 
-	symexec_entry = __symexec_create_entry(objectid, &entry->file,
+	slr_entry = __slr_create_entry(objectid, &entry->file,
 			(void *) entry, ORIGIN_GLOBAL);
-	if (IS_ERR(symexec_entry))
-		return PTR_ERR(symexec_entry);
+	if (IS_ERR(slr_entry))
+		return PTR_ERR(slr_entry);
 
-//	list_add_tail(&symexec_entry->reconcile_list, &symexec->reconcile_log);
+//	list_add_tail(&slr_entry->reconcile_list, &slr->reconcile_log);
 
 
-	err = symexec_dir_put(symexec, parent, symexec_entry);
+	err = slr_dir_put(slr, parent, slr_entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIR-PUT > parent: %llu; ino: %llu; file: %*.s\n",
+		BTRFS_SLR_DBG("DIR-PUT > parent: %llu; ino: %llu; file: %*.s\n",
 				parent, objectid,
 				entry->file.name.len, entry->file.name.name);
 		return err;
 	}
 
-	err = symexec_ino_map_put(symexec, entry->ino, objectid);
+	err = slr_ino_map_put(slr, entry->ino, objectid);
 	if (err < 0) {
-		BTRFS_SYM_DBG("INO-MAP-PUT > objid: %llu; ino: %llu\n",
+		BTRFS_SLR_DBG("INO-MAP-PUT > objid: %llu; ino: %llu\n",
 				objectid, entry->ino);
 		return err;
 	}
 
-	err = symexec_nlinks_put(symexec, objectid, 1);
+	err = slr_nlinks_put(slr, objectid, 1);
 	if (err < 0) {
-		BTRFS_SYM_DBG("NLINKS-PUT > objid: %llu; ino: %llu\n",
+		BTRFS_SLR_DBG("NLINKS-PUT > objid: %llu; ino: %llu\n",
 				objectid, entry->ino);
 		return err;
 	}
 
-	err = symexec_dirty_dir_put(symexec, parent);
+	err = slr_dirty_dir_put(slr, parent);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIRTY-PUT > parent: %llu\n", parent);
+		BTRFS_SLR_DBG("DIRTY-PUT > parent: %llu\n", parent);
 		return err;
 	}
 
@@ -1312,30 +1312,30 @@ static int __symexec_apply_create(struct symexec_ctl * symexec,
 	return 0;
 }
 
-static int __symexec_apply_unlink_do(struct symexec_ctl * symexec,
+static int __slr_apply_unlink_do(struct slr_ctl * slr,
 		struct btrfs_acid_log_file * file, unsigned int nlink,
 		struct btrfs_acid_log_entry * entry)
 {
 	int err;
 	u64 parent;
 	u64 ino;
-	struct symexec_entry * rem_entry;
-	struct symexec_entry * dir_entry;
+	struct slr_entry * rem_entry;
+	struct slr_entry * dir_entry;
 
-	if (!symexec || !file || !entry)
+	if (!slr || !file || !entry)
 		return -EINVAL;
 
-	err = __symexec_get_mapped(symexec, file->parent_location.objectid,
+	err = __slr_get_mapped(slr, file->parent_location.objectid,
 			&parent);
 	if (err < 0) {
-		BTRFS_SYM_DBG("parent ino: %llu; entry parent ino: %llu\n",
+		BTRFS_SLR_DBG("parent ino: %llu; entry parent ino: %llu\n",
 				parent, file->parent_location.objectid);
 		return err;
 	}
 
-	err = __symexec_get_mapped(symexec, file->location.objectid, &ino);
+	err = __slr_get_mapped(slr, file->location.objectid, &ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("parent ino: %llu; ino: %llu\n",
+		BTRFS_SLR_DBG("parent ino: %llu; ino: %llu\n",
 				parent, ino);
 		return err;
 	}
@@ -1343,70 +1343,70 @@ static int __symexec_apply_unlink_do(struct symexec_ctl * symexec,
 	/* there is a valid mapping for ino */
 	if (err) {
 #if 1
-		err = symexec_nlinks_dec_return(symexec, ino);
+		err = slr_nlinks_dec_return(slr, ino);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-DEC > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-DEC > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		} else if (!err) {
-			err = symexec_dir_remove(symexec, parent, ino, &file->name);
+			err = slr_dir_remove(slr, parent, ino, &file->name);
 			if (err < 0) {
-				BTRFS_SYM_DBG("DIR-REMOVE > parent: %llu; ino: %llu; name: %.*s\n",
+				BTRFS_SLR_DBG("DIR-REMOVE > parent: %llu; ino: %llu; name: %.*s\n",
 						parent, ino, file->name.len, file->name.name);
 				return err;
 			}
 		} else {
-			dir_entry = symexec_dir_lookup_file(symexec, parent, ino,
+			dir_entry = slr_dir_lookup_file(slr, parent, ino,
 					&file->name);
 			if (IS_ERR(dir_entry)) {
-				BTRFS_SYM_DBG("DIR-LOOKUP > parent: %llu, ino: %llu, name: %.*s\n",
+				BTRFS_SLR_DBG("DIR-LOOKUP > parent: %llu, ino: %llu, name: %.*s\n",
 						parent, ino, file->name.len, file->name.name);
 				return PTR_ERR(dir_entry);
 			}
 			dir_entry->invalidated = 1;
 		}
 #else
-		err = symexec_dir_remove(symexec, parent, ino, &file->name);
+		err = slr_dir_remove(slr, parent, ino, &file->name);
 		if (err < 0) {
-			BTRFS_SYM_DBG("DIR-REMOVE > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("DIR-REMOVE > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		}
 
-		err = symexec_nlinks_dec(symexec, ino);
+		err = slr_nlinks_dec(slr, ino);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-DEC > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-DEC > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		}
 
 #endif
 	} else {
-		rem_entry = __symexec_create_entry(parent, file,
+		rem_entry = __slr_create_entry(parent, file,
 				entry, ORIGIN_GLOBAL);
 		if (IS_ERR(rem_entry)) {
-			BTRFS_SYM_DBG("CREATE-ENTRY > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("CREATE-ENTRY > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return PTR_ERR(rem_entry);
 		}
-		err = symexec_rem_put(symexec, ino, rem_entry);
+		err = slr_rem_put(slr, ino, rem_entry);
 		if (err < 0) {
-			BTRFS_SYM_DBG("REM-PUT > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("REM-PUT > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		}
 
-		err = symexec_nlinks_put(symexec, ino, nlink);
+		err = slr_nlinks_put(slr, ino, nlink);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-PUT > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-PUT > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		}
 	}
 
-	err = symexec_dirty_dir_put(symexec, parent);
+	err = slr_dirty_dir_put(slr, parent);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIRTY-PUT > parent: %llu\n", parent);
+		BTRFS_SLR_DBG("DIRTY-PUT > parent: %llu\n", parent);
 		return err;
 	}
 
@@ -1414,18 +1414,18 @@ static int __symexec_apply_unlink_do(struct symexec_ctl * symexec,
 		goto out;
 
 	/*
-	reconcile_entry = __symexec_create_entry(ino, file, entry, ORIGIN_GLOBAL);
+	reconcile_entry = __slr_create_entry(ino, file, entry, ORIGIN_GLOBAL);
 	if (IS_ERR(reconcile_entry)) {
-		BTRFS_SYM_DBG("CREATE-REC-ENTRY > ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("CREATE-REC-ENTRY > ino: %llu, name: %.*s\n",
 				ino, file->name.len, file->name.name);
 		return err;
 	}
 
-	list_add_tail(&reconcile_entry->reconcile_list, &symexec->reconcile_log);
+	list_add_tail(&reconcile_entry->reconcile_list, &slr->reconcile_log);
 	*/
-	err = symexec_reconcile_log_put(symexec, ino, file, entry);
+	err = slr_reconcile_log_put(slr, ino, file, entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LOG-PUT > Error\n");
+		BTRFS_SLR_DBG("LOG-PUT > Error\n");
 		return err;
 	}
 
@@ -1433,117 +1433,117 @@ out:
 	return 0;
 }
 
-static int __symexec_apply_unlink(struct symexec_ctl * symexec,
+static int __slr_apply_unlink(struct slr_ctl * slr,
 		struct btrfs_acid_log_unlink * entry)
 {
-	if (!symexec || !entry
+	if (!slr || !entry
 			|| ((entry->type != BTRFS_ACID_LOG_UNLINK)
 					&& (entry->type != BTRFS_ACID_LOG_RMDIR)))
 		return -EINVAL;
 
-	return __symexec_apply_unlink_do(symexec, &entry->file,
+	return __slr_apply_unlink_do(slr, &entry->file,
 			entry->nlink, (struct btrfs_acid_log_entry *) entry);
 }
 
-static int __symexec_apply_link_do(struct symexec_ctl * symexec,
+static int __slr_apply_link_do(struct slr_ctl * slr,
 		struct btrfs_acid_log_file * file, unsigned int nlink,
 		struct btrfs_acid_log_entry * entry)
 {
 	int err;
 	u64 parent;
 	u64 ino;
-	struct symexec_entry * dir_entry;
+	struct slr_entry * dir_entry;
 
-	if (!symexec || !file || !entry)
+	if (!slr || !file || !entry)
 		return -EINVAL;
 
-	err = __symexec_get_mapped(symexec,
+	err = __slr_get_mapped(slr,
 			file->parent_location.objectid, &parent);
 	if (err < 0) {
-		BTRFS_SYM_DBG("parent ino: %llu; entry parent ino: %llu\n",
+		BTRFS_SLR_DBG("parent ino: %llu; entry parent ino: %llu\n",
 				parent, file->parent_location.objectid);
 		return err;
 	}
 
-	err = __symexec_get_mapped(symexec, file->location.objectid, &ino);
+	err = __slr_get_mapped(slr, file->location.objectid, &ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("parent ino: %llu; ino: %llu\n",
+		BTRFS_SLR_DBG("parent ino: %llu; ino: %llu\n",
 				parent, ino);
 		return err;
 	}
 
 	/* there is a valid mapping for ino */
 	if (err) {
-		err = symexec_nlinks_inc(symexec, ino);
+		err = slr_nlinks_inc(slr, ino);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-INC > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-INC > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		}
 	} else {
-		err = symexec_nlinks_put(symexec, ino, nlink);
+		err = slr_nlinks_put(slr, ino, nlink);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-PUT > parent: %llu; ino: %llu; name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-PUT > parent: %llu; ino: %llu; name: %.*s\n",
 					parent, ino, file->name.len, file->name.name);
 			return err;
 		}
 	}
 
-	dir_entry = __symexec_create_entry(ino, file, entry, ORIGIN_GLOBAL);
+	dir_entry = __slr_create_entry(ino, file, entry, ORIGIN_GLOBAL);
 	if (IS_ERR(dir_entry)) {
-		BTRFS_SYM_DBG("CREATE-ENTRY > parent: %llu; ino: %llu; name: %.*s\n",
+		BTRFS_SLR_DBG("CREATE-ENTRY > parent: %llu; ino: %llu; name: %.*s\n",
 				parent, ino, file->name.len, file->name.name);
 		return PTR_ERR(dir_entry);
 	}
 
-	err = symexec_reconcile_log_put(symexec, ino, file, entry);
+	err = slr_reconcile_log_put(slr, ino, file, entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LOG-PUT > Error\n");
+		BTRFS_SLR_DBG("LOG-PUT > Error\n");
 		return err;
 	}
 // //	if (entry->type != BTRFS_ACID_LOG_RENAME)
-//		list_add_tail(&dir_entry->reconcile_list, &symexec->reconcile_log);
+//		list_add_tail(&dir_entry->reconcile_list, &slr->reconcile_log);
 
-	err = symexec_dir_put(symexec, parent, dir_entry);
+	err = slr_dir_put(slr, parent, dir_entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIR-PUT > parent: %llu; ino: %llu; name: %.*s\n",
+		BTRFS_SLR_DBG("DIR-PUT > parent: %llu; ino: %llu; name: %.*s\n",
 				parent, ino, file->name.len, file->name.name);
 		return err;
 	}
 
-	err = symexec_dirty_dir_put(symexec, parent);
+	err = slr_dirty_dir_put(slr, parent);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIRTY-PUT > parent: %llu\n", parent);
+		BTRFS_SLR_DBG("DIRTY-PUT > parent: %llu\n", parent);
 		return err;
 	}
 
 	return 0;
 }
 
-static int __symexec_apply_link(struct symexec_ctl * symexec,
+static int __slr_apply_link(struct slr_ctl * slr,
 		struct btrfs_acid_log_link * entry)
 {
-	if (!symexec || !entry || (entry->type != BTRFS_ACID_LOG_LINK))
+	if (!slr || !entry || (entry->type != BTRFS_ACID_LOG_LINK))
 		return -EINVAL;
 
-	return __symexec_apply_link_do(symexec, &entry->new_file, entry->nlink,
+	return __slr_apply_link_do(slr, &entry->new_file, entry->nlink,
 			(struct btrfs_acid_log_entry *) entry);
 }
 
-static int __symexec_apply_rename(struct symexec_ctl * symexec,
+static int __slr_apply_rename(struct slr_ctl * slr,
 		struct btrfs_acid_log_rename * entry)
 {
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 #if 0
 	if (((void *) entry->new_file->location) != NULL) {
-		err = __symexec_apply_unlink_do(symexec, &entry->new_file,
+		err = __slr_apply_unlink_do(slr, &entry->new_file,
 				entry->new_file_nlink, (struct btrfs_acid_log_entry *) entry);
 		if (err < 0) {
-			BTRFS_SYM_DBG("TARGET-UNLINK-DO > name: %.*s\n",
+			BTRFS_SLR_DBG("TARGET-UNLINK-DO > name: %.*s\n",
 					entry->new_file.name.len, entry->new_file.name.name);
 			return err;
 		}
@@ -1552,29 +1552,29 @@ static int __symexec_apply_rename(struct symexec_ctl * symexec,
 #endif
 
 	if (entry->unlinked_file) {
-		err = __symexec_apply_unlink_do(symexec, entry->unlinked_file,
+		err = __slr_apply_unlink_do(slr, entry->unlinked_file,
 				entry->unlinked_file_nlink,
 				(struct btrfs_acid_log_entry *) entry);
 		if (err < 0) {
-			BTRFS_SYM_DBG("TARGET-UNLINK-DO > name: %.*s\n",
+			BTRFS_SLR_DBG("TARGET-UNLINK-DO > name: %.*s\n",
 					entry->unlinked_file->name.len,
 					entry->unlinked_file->name.name);
 			return err;
 		}
 	}
 
-	err = __symexec_apply_link_do(symexec, &entry->new_file, entry->nlink,
+	err = __slr_apply_link_do(slr, &entry->new_file, entry->nlink,
 			(struct btrfs_acid_log_entry *) entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LINK-DO > name: %.*s\n",
+		BTRFS_SLR_DBG("LINK-DO > name: %.*s\n",
 				entry->new_file.name.len, entry->new_file.name.name);
 		return err;
 	}
 
-	err = __symexec_apply_unlink_do(symexec, &entry->old_file, entry->nlink,
+	err = __slr_apply_unlink_do(slr, &entry->old_file, entry->nlink,
 			(struct btrfs_acid_log_entry *) entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("UNLINK-DO > name: %.*s\n",
+		BTRFS_SLR_DBG("UNLINK-DO > name: %.*s\n",
 				entry->old_file.name.len, entry->old_file.name.name);
 		return err;
 	}
@@ -1582,18 +1582,18 @@ static int __symexec_apply_rename(struct symexec_ctl * symexec,
 	return 0;
 }
 
-static int __symexec_apply_write(struct symexec_ctl * symexec,
+static int __slr_apply_write(struct slr_ctl * slr,
 		struct btrfs_acid_log_rw * entry)
 {
 	int err;
 	u64 ino;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
-	err = __symexec_get_mapped(symexec, entry->file.location.objectid, &ino);
+	err = __slr_get_mapped(slr, entry->file.location.objectid, &ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("ino: %llu, name: %.*s\n", ino,
+		BTRFS_SLR_DBG("ino: %llu, name: %.*s\n", ino,
 				entry->file.name.len, entry->file.name.name);
 		return err;
 	}
@@ -1601,26 +1601,26 @@ static int __symexec_apply_write(struct symexec_ctl * symexec,
 	/* there is no valid mapping for ino; i.e., it was not created/linked
 	 * during the symbolic execution. */
 	if (!err) {
-		err = symexec_nlinks_put(symexec, entry->ino, entry->nlink);
+		err = slr_nlinks_put(slr, entry->ino, entry->nlink);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-PUT > ino: %llu; name: %.*s\n", ino,
+			BTRFS_SLR_DBG("NLINKS-PUT > ino: %llu; name: %.*s\n", ino,
 					entry->file.name.len, entry->file.name.name);
 			return err;
 		}
-		err = symexec_blocks_put(symexec, ino, entry, ORIGIN_GLOBAL);
+		err = slr_blocks_put(slr, ino, entry, ORIGIN_GLOBAL);
 		if (err < 0) {
-			BTRFS_SYM_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
+			BTRFS_SLR_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
 					entry->file.name.len, entry->file.name.name);
 			return err;
 		}
 	}
 
-	// if the file was created during symexec, then we see no point in keeping
+	// if the file was created during slr, then we see no point in keeping
 	// it in the log, as it will be reconciled with the snapshot on create
 	// using extent magic.
-//	err = symexec_blocks_put(symexec, ino, entry, ORIGIN_GLOBAL);
+//	err = slr_blocks_put(slr, ino, entry, ORIGIN_GLOBAL);
 //	if (err < 0) {
-//		BTRFS_SYM_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
+//		BTRFS_SLR_DBG("BLOCKS-PUT > ino: %llu; name: %.*s\n", ino,
 //				entry->file.name.len, entry->file.name.name);
 //		return err;
 //	}
@@ -1628,7 +1628,7 @@ static int __symexec_apply_write(struct symexec_ctl * symexec,
 }
 
 /**
- * symexec_apply - Apply an operation log to our symbolic execution tree.
+ * slr_apply - Apply an operation log to our symbolic execution tree.
  *
  * Basically, this method should be used to apply the operations from the
  * master copy into our symbolic execution tree. These operations will be
@@ -1636,14 +1636,14 @@ static int __symexec_apply_write(struct symexec_ctl * symexec,
  * are different from those required by the snapshot's operations. Therefore,
  * we must use another method to apply the snapshot's operations.
  */
-static int symexec_apply(struct symexec_ctl * symexec, struct list_head * log)
+static int slr_apply(struct slr_ctl * slr, struct list_head * log)
 {
 	struct list_head * log_item;
 	struct btrfs_acid_log_entry * log_entry;
 	int err = 0;
 
 
-	if (!symexec || !log)
+	if (!slr || !log)
 		return -EINVAL;
 
 	if (list_empty(log))
@@ -1657,20 +1657,20 @@ static int symexec_apply(struct symexec_ctl * symexec, struct list_head * log)
 		case BTRFS_ACID_LOG_MKDIR:
 		case BTRFS_ACID_LOG_SYMLINK:
 		case BTRFS_ACID_LOG_MKNOD:
-			err = __symexec_apply_create(symexec, (void *) log_entry);
+			err = __slr_apply_create(slr, (void *) log_entry);
 			break;
 		case BTRFS_ACID_LOG_UNLINK:
 		case BTRFS_ACID_LOG_RMDIR:
-			err = __symexec_apply_unlink(symexec, (void *) log_entry);
+			err = __slr_apply_unlink(slr, (void *) log_entry);
 			break;
 		case BTRFS_ACID_LOG_LINK:
-			err = __symexec_apply_link(symexec, (void *) log_entry);
+			err = __slr_apply_link(slr, (void *) log_entry);
 			break;
 		case BTRFS_ACID_LOG_RENAME:
-			err = __symexec_apply_rename(symexec, (void *) log_entry);
+			err = __slr_apply_rename(slr, (void *) log_entry);
 			break;
 		case BTRFS_ACID_LOG_WRITE:
-			err = __symexec_apply_write(symexec, (void *) log_entry);
+			err = __slr_apply_write(slr, (void *) log_entry);
 			break;
 		}
 	}
@@ -1679,156 +1679,156 @@ out:
 	return err;
 }
 
-static int __symexec_validate_create(struct symexec_ctl * symexec,
+static int __slr_validate_create(struct slr_ctl * slr,
 		struct btrfs_acid_log_create * entry)
 {
 	u64 parent, ino;
-	struct symexec_entry * dir_entry;
+	struct slr_entry * dir_entry;
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 	parent = entry->file.parent_location.objectid;
 	ino = entry->file.location.objectid;
 
 #if 0
-	err = symexec_dir_match_file(symexec, parent, 0, &entry->file.name);
+	err = slr_dir_match_file(slr, parent, 0, &entry->file.name);
 	if (err < 0) {
-		BTRFS_SYM_DBG_FILE(&entry->file);
+		BTRFS_SLR_DBG_FILE(&entry->file);
 		return err;
 	}
 
 	if (err) { /* matched an entry */
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 #endif
 
-	dir_entry = symexec_dir_lookup_file(symexec, parent, 0,	&entry->file.name);
+	dir_entry = slr_dir_lookup_file(slr, parent, 0,	&entry->file.name);
 	if (IS_ERR(dir_entry)) {
-		BTRFS_SYM_DBG("DIR-FIND-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("DIR-FIND-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, entry->file.name.len, entry->file.name.name);
 		return PTR_ERR(dir_entry);
 	} else if (dir_entry) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and %.*s (global) "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and %.*s (global) "
 				"on parent %llu\n",
 				entry->file.name.len, entry->file.name.name,
 				dir_entry->file->name.len, dir_entry->file->name.name,
 				parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	dir_entry = __symexec_create_entry(ino, &entry->file,
+	dir_entry = __slr_create_entry(ino, &entry->file,
 			(struct btrfs_acid_log_entry *) entry, ORIGIN_LOCAL);
 	if (IS_ERR(dir_entry)) {
-		BTRFS_SYM_DBG_FILE(&entry->file);
+		BTRFS_SLR_DBG_FILE(&entry->file);
 		return PTR_ERR(dir_entry);
 	}
 
-	err = symexec_dir_put(symexec, parent, dir_entry);
+	err = slr_dir_put(slr, parent, dir_entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG_FILE(&entry->file);
+		BTRFS_SLR_DBG_FILE(&entry->file);
 		return err;
 	}
 
-	err = symexec_nlinks_put(symexec, ino, 1);
+	err = slr_nlinks_put(slr, ino, 1);
 	if (err < 0) {
-		BTRFS_SYM_DBG_FILE(&entry->file);
+		BTRFS_SLR_DBG_FILE(&entry->file);
 		return err;
 	}
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
-static int __symexec_validate_unlink_do(struct symexec_ctl * symexec,
+static int __slr_validate_unlink_do(struct slr_ctl * slr,
 		struct btrfs_acid_log_file * file, unsigned int nlink,
 		struct btrfs_acid_log_entry * entry)
 {
 	u64 parent, ino;
 	u8 origin;
 	struct qstr * name;
-	struct symexec_entry * rem_entry;
+	struct slr_entry * rem_entry;
 	int err;
 
-	if (!symexec || !file || !entry)
+	if (!slr || !file || !entry)
 		return -EINVAL;
 
 	parent = file->parent_location.objectid;
 	ino = file->location.objectid;
 	name = &file->name;
 
-	err = symexec_rem_match_file(symexec, ino, parent, name, &origin);
+	err = slr_rem_match_file(slr, ino, parent, name, &origin);
 	if (err < 0) {
-		BTRFS_SYM_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, name->len, name->name);
 		return err;
 	} else if (err) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
 				"on parent %llu\n",
 				name->len, name->name,
 				(origin == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"),	parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	err = symexec_dir_match_file(symexec, parent, ino, name, &origin);
+	err = slr_dir_match_file(slr, parent, ino, name, &origin);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIR-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("DIR-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, name->len, name->name);
 		return err;
 	} else if (err) { /* matched */
 		if (origin != ORIGIN_LOCAL) {
-			BTRFS_SYM_DBG("DIR-MATCH-FILE > ORIGIN: GLOBAL, parent: %llu,"
+			BTRFS_SLR_DBG("DIR-MATCH-FILE > ORIGIN: GLOBAL, parent: %llu,"
 					"ino: %llu, name: %.*s\n",
 					parent, ino, name->len, name->name);
 			return -EINVAL;
 		}
 
-		err = symexec_dir_remove(symexec, parent, ino, name);
+		err = slr_dir_remove(slr, parent, ino, name);
 		if (err < 0) {
-			BTRFS_SYM_DBG("DIR-REMOVE > parent: %llu, ino: %llu, name: %.*s\n",
+			BTRFS_SLR_DBG("DIR-REMOVE > parent: %llu, ino: %llu, name: %.*s\n",
 					parent, ino, name->len, name->name);
 			return err;
 		}
-		err = symexec_nlinks_dec(symexec, ino);
+		err = slr_nlinks_dec(slr, ino);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-DEC > parent: %llu, ino: %llu, name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-DEC > parent: %llu, ino: %llu, name: %.*s\n",
 					parent, ino, name->len, name->name);
 			return err;
 		}
 	} else {
-		rem_entry = __symexec_create_entry(parent, file, entry, ORIGIN_LOCAL);
+		rem_entry = __slr_create_entry(parent, file, entry, ORIGIN_LOCAL);
 		if (IS_ERR(rem_entry)) {
-			BTRFS_SYM_DBG("CREATE-ENTRY > parent: %llu, ino: %llu, name: %.*s\n",
+			BTRFS_SLR_DBG("CREATE-ENTRY > parent: %llu, ino: %llu, name: %.*s\n",
 					parent, ino, name->len, name->name);
 			return PTR_ERR(rem_entry);
 		}
-		err = symexec_rem_put(symexec, ino, rem_entry);
+		err = slr_rem_put(slr, ino, rem_entry);
 		if (err < 0) {
-			BTRFS_SYM_DBG("REM-PUT> parent: %llu, ino: %llu, name: %.*s\n",
+			BTRFS_SLR_DBG("REM-PUT> parent: %llu, ino: %llu, name: %.*s\n",
 					parent, ino, name->len, name->name);
 			return err;
 		}
-		err = symexec_nlinks_put(symexec, ino, nlink);
+		err = slr_nlinks_put(slr, ino, nlink);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-PUT > parent: %llu, ino: %llu, name: %.*s\n",
+			BTRFS_SLR_DBG("NLINKS-PUT > parent: %llu, ino: %llu, name: %.*s\n",
 					parent, ino, name->len, name->name);
 			return err;
 		}
 	}
 
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
-static int __symexec_validate_unlink(struct symexec_ctl * symexec,
+static int __slr_validate_unlink(struct slr_ctl * slr,
 		struct btrfs_acid_log_unlink * entry)
 {
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
-	return __symexec_validate_unlink_do(symexec, &entry->file,
+	return __slr_validate_unlink_do(slr, &entry->file,
 			entry->nlink, (struct btrfs_acid_log_entry *) entry);
 }
 
-static int __symexec_validate_link_do(struct symexec_ctl * symexec,
+static int __slr_validate_link_do(struct slr_ctl * slr,
 		struct btrfs_acid_log_file * old_file,
 		struct btrfs_acid_log_file * new_file,
 		unsigned int nlink,
@@ -1838,11 +1838,11 @@ static int __symexec_validate_link_do(struct symexec_ctl * symexec,
 	u64 new_parent, new_ino;
 	struct qstr * old_name, * new_name;
 	u8 orig;
-	struct symexec_nlinks_tree_entry * nlinks_entry;
-	struct symexec_entry * dir_entry;
+	struct slr_nlinks_tree_entry * nlinks_entry;
+	struct slr_entry * dir_entry;
 	int err;
 
-	if (!symexec || !old_file || !new_file || !entry)
+	if (!slr || !old_file || !new_file || !entry)
 		return -EINVAL;
 
 	old_parent = old_file->parent_location.objectid;
@@ -1852,130 +1852,130 @@ static int __symexec_validate_link_do(struct symexec_ctl * symexec,
 	new_ino = new_file->location.objectid;
 	new_name = &new_file->name;
 
-//	err = symexec_rem_match_file(symexec, old_parent, old_ino, old_name, &orig);
-	err = symexec_rem_match_file(symexec, old_ino, old_parent, old_name, &orig);
+//	err = slr_rem_match_file(slr, old_parent, old_ino, old_name, &orig);
+	err = slr_rem_match_file(slr, old_ino, old_parent, old_name, &orig);
 	if (err < 0) {
-		BTRFS_SYM_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				old_parent, old_ino, old_name->len, old_name->name);
 		return err;
 	} else if (err) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
 				"on parent %llu: link's old file previously removed.\n",
 				old_name->len, old_name->name,
 				(orig == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), old_parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	err = symexec_dir_match_file(symexec, new_parent, 0, new_name, &orig);
+	err = slr_dir_match_file(slr, new_parent, 0, new_name, &orig);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIR-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("DIR-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				new_parent, new_ino, new_name->len, new_name->name);
 		return err;
 	} else if (err) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
 				"on parent %llu: link's new file previously created.\n",
 				new_name->len, new_name->name,
 				(orig == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), old_parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	dir_entry = __symexec_create_entry(new_ino, new_file, entry, ORIGIN_LOCAL);
+	dir_entry = __slr_create_entry(new_ino, new_file, entry, ORIGIN_LOCAL);
 	if (IS_ERR(dir_entry)) {
-		BTRFS_SYM_DBG_FILE(new_file);
+		BTRFS_SLR_DBG_FILE(new_file);
 		return PTR_ERR(dir_entry);
 	}
-	err = symexec_dir_put(symexec, new_parent, dir_entry);
+	err = slr_dir_put(slr, new_parent, dir_entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG_FILE(new_file);
+		BTRFS_SLR_DBG_FILE(new_file);
 		return err;
 	}
 
-	nlinks_entry = symexec_nlinks_get_entry(symexec, old_ino);
+	nlinks_entry = slr_nlinks_get_entry(slr, old_ino);
 	if (IS_ERR(nlinks_entry)) {
-		BTRFS_SYM_DBG("NLINKS-GET-ENTRY > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("NLINKS-GET-ENTRY > parent: %llu, ino: %llu, name: %.*s\n",
 				old_parent, old_ino, old_name->len, old_name->name);
 		return err;
 	} else if (!nlinks_entry) {
-		err = symexec_nlinks_put(symexec, old_ino, nlink);
+		err = slr_nlinks_put(slr, old_ino, nlink);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-PUT > ino: %llu, nlink: %d\n",
+			BTRFS_SLR_DBG("NLINKS-PUT > ino: %llu, nlink: %d\n",
 					old_ino, nlink);
 			return err;
 		}
 	} else {
-		err = symexec_nlinks_inc(symexec, old_ino);
+		err = slr_nlinks_inc(slr, old_ino);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-INC > ino: %llu\n", old_ino);
+			BTRFS_SLR_DBG("NLINKS-INC > ino: %llu\n", old_ino);
 			return err;
 		}
 	}
 
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
-static int __symexec_validate_link(struct symexec_ctl * symexec,
+static int __slr_validate_link(struct slr_ctl * slr,
 		struct btrfs_acid_log_link * entry)
 {
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
-	return __symexec_validate_link_do(symexec, &entry->old_file,
+	return __slr_validate_link_do(slr, &entry->old_file,
 			&entry->new_file, entry->nlink,
 			(struct btrfs_acid_log_entry *) entry);
 
 }
 
-static int __symexec_validate_rename(struct symexec_ctl * symexec,
+static int __slr_validate_rename(struct slr_ctl * slr,
 		struct btrfs_acid_log_rename * entry)
 {
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 	if (entry->unlinked_file) {
-		err = __symexec_validate_unlink_do(symexec, entry->unlinked_file,
+		err = __slr_validate_unlink_do(slr, entry->unlinked_file,
 				entry->unlinked_file_nlink,
 				(struct btrfs_acid_log_entry *) entry);
 		if (err < 0) {
-			BTRFS_SYM_DBG("TARGET-UNLINK-DO > name: %.*s\n",
+			BTRFS_SLR_DBG("TARGET-UNLINK-DO > name: %.*s\n",
 					entry->unlinked_file->name.len,
 					entry->unlinked_file->name.name);
 			return err;
 		}
 	}
 
-	err = __symexec_validate_link_do(symexec, &entry->old_file,
+	err = __slr_validate_link_do(slr, &entry->old_file,
 			&entry->new_file, entry->nlink,
 			(struct btrfs_acid_log_entry *) entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LINK-DO > old name: %.*s; new name: %.*s\n",
+		BTRFS_SLR_DBG("LINK-DO > old name: %.*s; new name: %.*s\n",
 				entry->old_file.name.len, entry->old_file.name.name,
 				entry->new_file.name.len, entry->new_file.name.name);
 		return err;
 	}
 
-	err = __symexec_validate_unlink_do(symexec, &entry->old_file,
+	err = __slr_validate_unlink_do(slr, &entry->old_file,
 			entry->nlink, (struct btrfs_acid_log_entry *) entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("UNLINK-DO > name: %.*s\n",
+		BTRFS_SLR_DBG("UNLINK-DO > name: %.*s\n",
 				entry->old_file.name.len, entry->old_file.name.name);
 		return err;
 	}
 
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
-static int __symexec_validate_readdir(struct symexec_ctl * symexec,
+static int __slr_validate_readdir(struct slr_ctl * slr,
 		struct btrfs_acid_log_readdir * entry)
 {
 	u64 ino;
 	struct qstr * name;
 //	struct list_head * lst;
-//	struct symexec_entry * dir_entry;
-	struct symexec_entry * rem_entry;
+//	struct slr_entry * dir_entry;
+	struct slr_entry * rem_entry;
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 	/* Please, don't forget: this method checks whether a directory was changed,
@@ -1987,104 +1987,104 @@ static int __symexec_validate_readdir(struct symexec_ctl * symexec,
 	name = &entry->file.name;
 
 #if 0
-	lst = __list_tree_get(&symexec->dir, ino);
+	lst = __list_tree_get(&slr->dir, ino);
 	if (IS_ERR(lst)) {
-		BTRFS_SYM_DBG("TREE-GET > ino: %llu\n", ino);
+		BTRFS_SLR_DBG("TREE-GET > ino: %llu\n", ino);
 		return PTR_ERR(lst);
 	} else if (!lst)
 		goto validate_rem;
 
 	list_for_each_entry(dir_entry, lst, list) {
 		if (dir_entry->origin == ORIGIN_GLOBAL) {
-			BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local ino: %llu) "
+			BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local ino: %llu) "
 					"and GLOBAL entry %.*s: directory previously changed.\n",
 					name->len, name->name, ino,
 					entry->file.name.len, entry->file.name.name);
-			return SYMEXEC_CONFLICT;
+			return SLR_CONFLICT;
 		}
 	}
 #endif
 
-	err = symexec_dirty_dir_contains(symexec, ino);
+	err = slr_dirty_dir_contains(slr, ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("DIRTY-CONTAINS > ino: %llu\n", ino);
+		BTRFS_SLR_DBG("DIRTY-CONTAINS > ino: %llu\n", ino);
 		return err;
 	} else if (err) {
-		BTRFS_SYM_DBG("CONFLICT ON %.*s (local ino: %llu): "
+		BTRFS_SLR_DBG("CONFLICT ON %.*s (local ino: %llu): "
 				"directory previously changed.\n",
 				name->len, name->name, ino);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	rem_entry = symexec_rem_lookup_file(symexec, ino, 0, name);
+	rem_entry = slr_rem_lookup_file(slr, ino, 0, name);
 	if (IS_ERR(rem_entry)) {
-		BTRFS_SYM_DBG("REM-LOOKUP > ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-LOOKUP > ino: %llu, name: %.*s\n",
 				ino, name->len, name->name);
 		return PTR_ERR(rem_entry);
 	} else if (rem_entry != NULL) {
-		BTRFS_SYM_DBG("CONFLICT ON %.*s (local ino: %llu): "
+		BTRFS_SLR_DBG("CONFLICT ON %.*s (local ino: %llu): "
 				"directory previously removed.\n",
 				name->len, name->name, ino);
-		return SYMEXEC_CONFLICT; // this should be taken with a grain of salt.
+		return SLR_CONFLICT; // this should be taken with a grain of salt.
 	}
 
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
-static int __symexec_validate_truncate(struct symexec_ctl * symexec,
+static int __slr_validate_truncate(struct slr_ctl * slr,
 		struct btrfs_acid_log_truncate * entry)
 {
 	u64 parent, ino;
 	struct qstr * name;
 	struct list_head * lst;
-//	struct symexec_entry * rem_entry;
-	struct symexec_blocks_truncate * trunc_entry;
+//	struct slr_entry * rem_entry;
+	struct slr_blocks_truncate * trunc_entry;
 	u8 orig;
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 	ino = entry->ino;
 	parent = entry->file.parent_location.objectid;
 	name = &entry->file.name;
 
-	err = symexec_rem_match_file(symexec, ino, parent, name, &orig);
+	err = slr_rem_match_file(slr, ino, parent, name, &orig);
 	if (err < 0) {
-		BTRFS_SYM_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, name->len, name->name);
 		return err;
 	} else if (err) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
 				"on parent %llu: file to truncate previously removed.\n",
 				name->len, name->name,
 				(orig == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
 #if 0
-	lst = symexec_rem_get(symexec, ino);
+	lst = slr_rem_get(slr, ino);
 	if (IS_ERR(lst)) {
-		BTRFS_SYM_DBG("REM-GET > ino: %llu\n", ino);
+		BTRFS_SLR_DBG("REM-GET > ino: %llu\n", ino);
 		return PTR_ERR(lst);
 	} else if (lst == NULL)
 		goto validate_blocks;
 
 	list_for_each_entry(rem_entry, lst, list) {
 		if (rem_entry->origin == ORIGIN_GLOBAL) {
-			BTRFS_SYM_DBG("CONFLICT ON TRUNCATE ino: %llu WITH %.*s (p: %llu): "
+			BTRFS_SLR_DBG("CONFLICT ON TRUNCATE ino: %llu WITH %.*s (p: %llu): "
 					"file previously removed.\n",
 					ino, rem_entry->file->name.len, rem_entry->file->name.name,
 					rem_entry->file->parent_location.objectid);
-			return SYMEXEC_CONFLICT;
+			return SLR_CONFLICT;
 		}
 	}
 validate_blocks:
 #endif
 
-	lst = symexec_blocks_get(symexec, ino);
+	lst = slr_blocks_get(slr, ino);
 	if (IS_ERR(lst)) {
-		BTRFS_SYM_DBG("BLOCKS-GET > ino: %llu\n", ino);
+		BTRFS_SLR_DBG("BLOCKS-GET > ino: %llu\n", ino);
 		return PTR_ERR(lst);
 	}
 
@@ -2092,10 +2092,10 @@ validate_blocks:
 	if (!trunc_entry)
 		return -ENOMEM;
 
-	err = __symexec_fill_entry((struct symexec_entry *) trunc_entry, ino,
+	err = __slr_fill_entry((struct slr_entry *) trunc_entry, ino,
 			&entry->file, (struct btrfs_acid_log_entry *) entry, ORIGIN_LOCAL);
 	if (err < 0) {
-		BTRFS_SYM_DBG("FILL-ENTRY > ino: %llu, file: %p, entry: %p\n",
+		BTRFS_SLR_DBG("FILL-ENTRY > ino: %llu, file: %p, entry: %p\n",
 				ino, &entry->file, entry);
 		return err;
 	}
@@ -2104,26 +2104,26 @@ validate_blocks:
 
 	list_replace_init(lst, &trunc_entry->truncated_blocks_list);
 	list_add_tail(&trunc_entry->list, lst);
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 
 insert_entry:
 #if 0
-	err = symexec_blocks_put(symexec, ino,
+	err = slr_blocks_put(slr, ino,
 			(struct btrfs_acid_log_rw *) entry, ORIGIN_LOCAL);
 #endif
-	BTRFS_SYM_DBG("PUTTING INTO BLOCKS TREE\n");
+	BTRFS_SLR_DBG("PUTTING INTO BLOCKS TREE\n");
 	INIT_LIST_HEAD(&trunc_entry->truncated_blocks_list);
-	err = __list_tree_put(&symexec->blocks, ino,
-			(struct symexec_entry *) trunc_entry);
+	err = __list_tree_put(&slr->blocks, ino,
+			(struct slr_entry *) trunc_entry);
 	if (err < 0) {
-		BTRFS_SYM_DBG("BLOCKS-PUT > ino: %llu, entry: %p\n", ino, entry);
+		BTRFS_SLR_DBG("BLOCKS-PUT > ino: %llu, entry: %p\n", ino, entry);
 		return err;
 	}
 
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
-static int __symexec_validate_write(struct symexec_ctl * symexec,
+static int __slr_validate_write(struct slr_ctl * slr,
 		struct btrfs_acid_log_rw * entry)
 {
 	u64 parent, ino;
@@ -2131,36 +2131,36 @@ static int __symexec_validate_write(struct symexec_ctl * symexec,
 	u8 origin;
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 	parent = entry->file.parent_location.objectid;
 	ino = entry->file.location.objectid;
 	name = &entry->file.name;
 
-	err = symexec_rem_match_file(symexec, ino, parent, name, &origin);
+	err = slr_rem_match_file(slr, ino, parent, name, &origin);
 	if (err < 0) {
-		BTRFS_SYM_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, name->len, name->name);
 		return err;
 	} else if (err) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
 				"on parent %llu: file to write previously removed.\n",
 				name->len, name->name,
 				(origin == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	err = symexec_nlinks_contains(symexec, ino);
+	err = slr_nlinks_contains(slr, ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("NLINKS-CONTAINS > ino: %llu\n", ino);
+		BTRFS_SLR_DBG("NLINKS-CONTAINS > ino: %llu\n", ino);
 	} else if (!err) {
-		err = symexec_nlinks_put(symexec, ino, entry->nlink);
+		err = slr_nlinks_put(slr, ino, entry->nlink);
 		if (err < 0) {
-			BTRFS_SYM_DBG("NLINKS-PUT > ino: %llu\n", ino);
+			BTRFS_SLR_DBG("NLINKS-PUT > ino: %llu\n", ino);
 		}
 	}
-	return (err < 0 ? err : SYMEXEC_OKAY);
+	return (err < 0 ? err : SLR_OKAY);
 }
 
 static int __check_rw_overlap(struct btrfs_acid_log_rw * a,
@@ -2183,102 +2183,102 @@ static int __check_rw_overlap(struct btrfs_acid_log_rw * a,
 			&& (last->first_page <= first->last_page));
 }
 
-static int __symexec_validate_read(struct symexec_ctl * symexec,
+static int __slr_validate_read(struct slr_ctl * slr,
 		struct btrfs_acid_log_rw * entry)
 {
 	u64 parent, ino;
 	struct qstr * name;
 	struct list_head * lst;
-	struct symexec_entry * symexec_entry;
+	struct slr_entry * slr_entry;
 	struct btrfs_acid_log_rw * rw_entry;
 	struct btrfs_acid_log_truncate * trunc_entry;
 	u8 origin;
 	int err;
 
-	if (!symexec || !entry)
+	if (!slr || !entry)
 		return -EINVAL;
 
 	parent = entry->file.parent_location.objectid;
 	ino = entry->file.location.objectid;
 	name = &entry->file.name;
 
-	err = symexec_rem_match_file(symexec, ino, parent, name, &origin);
+	err = slr_rem_match_file(slr, ino, parent, name, &origin);
 	if (err < 0) {
-		BTRFS_SYM_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("REM-MATCH-FILE > parent: %llu, ino: %llu, name: %.*s\n",
 				parent, ino, name->len, name->name);
 		return err;
 	} else if (err) { /* matched */
-		BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
+		BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and a %s entry "
 				"on parent %llu: file to read previously removed.\n",
 				name->len, name->name,
 				(origin == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), parent);
-		return SYMEXEC_CONFLICT;
+		return SLR_CONFLICT;
 	}
 
-	lst = symexec_blocks_get(symexec, ino);
+	lst = slr_blocks_get(slr, ino);
 	if (IS_ERR(lst)) {
-		BTRFS_SYM_DBG("BLOCKS-GET > ino: %llu\n", ino);
+		BTRFS_SLR_DBG("BLOCKS-GET > ino: %llu\n", ino);
 		return PTR_ERR(lst);
 	} else if (!lst || list_empty(lst))
 		goto out_okay;
 
-	list_for_each_entry(symexec_entry, lst, list) {
-		if (symexec_entry->log_entry->type == BTRFS_ACID_LOG_TRUNCATE) {
+	list_for_each_entry(slr_entry, lst, list) {
+		if (slr_entry->log_entry->type == BTRFS_ACID_LOG_TRUNCATE) {
 			/* ignore all truncates locally added as those won't
 			 * be relevant to us */
-			if (symexec_entry->origin == ORIGIN_LOCAL)
+			if (slr_entry->origin == ORIGIN_LOCAL)
 				continue;
 
 			trunc_entry = (struct btrfs_acid_log_truncate *)
-					symexec_entry->log_entry;
+					slr_entry->log_entry;
 
 			if ((entry->first_page >= trunc_entry->from)
 					|| (entry->last_page >= trunc_entry->from)) {
-				BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and %.*s (%s) "
+				BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and %.*s (%s) "
 						"on parent %llu: "
 						"read pages [%lu, %lu], truncate from page %lu\n",
 						name->len, name->name,
 						trunc_entry->file.name.len, trunc_entry->file.name.name,
-						(symexec_entry->origin == ORIGIN_GLOBAL ?
+						(slr_entry->origin == ORIGIN_GLOBAL ?
 								"GLOBAL" : "LOCAL"), parent,
 						entry->first_page, entry->last_page,
 						trunc_entry->from);
-				return SYMEXEC_CONFLICT;
+				return SLR_CONFLICT;
 			}
 			continue;
 		}
 
-		rw_entry = (struct btrfs_acid_log_rw *) symexec_entry->log_entry;
+		rw_entry = (struct btrfs_acid_log_rw *) slr_entry->log_entry;
 		err = __check_rw_overlap(entry, rw_entry);
 		if (err < 0) {
-			BTRFS_SYM_DBG("CHECK-RW-OVERLAP > entry: %p, rw_entry: %p\n",
+			BTRFS_SLR_DBG("CHECK-RW-OVERLAP > entry: %p, rw_entry: %p\n",
 					entry, rw_entry);
 			return err;
 		} else if (err != 0) {
-			BTRFS_SYM_DBG("CONFLICT BETWEEN %.*s (local) and %.*s (%s) "
+			BTRFS_SLR_DBG("CONFLICT BETWEEN %.*s (local) and %.*s (%s) "
 					"on parent %llu: "
 					"read pages [%lu, %lu], write page [%lu, %lu]\n",
 					name->len, name->name,
 					rw_entry->file.name.len, rw_entry->file.name.name,
-					(symexec_entry->origin == ORIGIN_GLOBAL ?
+					(slr_entry->origin == ORIGIN_GLOBAL ?
 							"GLOBAL" : "LOCAL"),
 					parent,
 					entry->first_page, entry->last_page,
 					rw_entry->first_page, rw_entry->last_page);
-			return SYMEXEC_CONFLICT;
+			return SLR_CONFLICT;
 		}
 	}
 
 out_okay:
-	return SYMEXEC_OKAY;
+	return SLR_OKAY;
 }
 
 /**
- * symexec_validate - Validates a snapshot's operation log against a
+ * slr_validate - Validates a snapshot's operation log against a
  * symbolic execution.
  *
  */
-static int symexec_validate(struct symexec_ctl * symexec,
+static int slr_validate(struct slr_ctl * slr,
 		struct btrfs_acid_snapshot * snap)
 {
 	struct list_head * log_item;
@@ -2286,11 +2286,11 @@ static int symexec_validate(struct symexec_ctl * symexec,
 	int err;
 	int stats_processed_ops = 0;
 
-	if (!symexec)
+	if (!slr)
 		return -EINVAL;
 
 	if (list_empty(&snap->op_log)) {
-		BTRFS_SYM_DBG("Snapshot's Operation Log is EMPTY\n");
+		BTRFS_SLR_DBG("Snapshot's Operation Log is EMPTY\n");
 		goto out;
 	}
 
@@ -2302,31 +2302,31 @@ static int symexec_validate(struct symexec_ctl * symexec,
 		case BTRFS_ACID_LOG_MKDIR:
 		case BTRFS_ACID_LOG_MKNOD:
 		case BTRFS_ACID_LOG_SYMLINK:
-			err = __symexec_validate_create(symexec, (void *) entry);
+			err = __slr_validate_create(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_UNLINK:
 		case BTRFS_ACID_LOG_RMDIR:
-			err = __symexec_validate_unlink(symexec, (void *) entry);
+			err = __slr_validate_unlink(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_LINK:
-			err = __symexec_validate_link(symexec, (void *) entry);
+			err = __slr_validate_link(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_RENAME:
-			err = __symexec_validate_rename(symexec, (void *) entry);
+			err = __slr_validate_rename(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_READDIR:
-			err = __symexec_validate_readdir(symexec, (void *) entry);
+			err = __slr_validate_readdir(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_TRUNCATE:
-			BTRFS_SYM_DBG("<MISSING> TRUNCATE VALIDATION IS INCORRECT!\n");
-			err = __symexec_validate_truncate(symexec, (void *) entry);
+			BTRFS_SLR_DBG("<MISSING> TRUNCATE VALIDATION IS INCORRECT!\n");
+			err = __slr_validate_truncate(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_WRITE:
-			BTRFS_SYM_DBG("<MISSING> WRITE VALIDATION: Delta M's truncates.\n");
-			err = __symexec_validate_write(symexec, (void *) entry);
+			BTRFS_SLR_DBG("<MISSING> WRITE VALIDATION: Delta M's truncates.\n");
+			err = __slr_validate_write(slr, (void *) entry);
 			break;
 		case BTRFS_ACID_LOG_READ:
-			err = __symexec_validate_read(symexec, (void *) entry);
+			err = __slr_validate_read(slr, (void *) entry);
 			break;
 		}
 
@@ -2335,25 +2335,25 @@ static int symexec_validate(struct symexec_ctl * symexec,
 		stats_processed_ops ++;
 	}
 
-	BTRFS_SYM_PRINT("Total Processed ops = %d\n", stats_processed_ops);
+	BTRFS_SLR_PRINT("Total Processed ops = %d\n", stats_processed_ops);
 out:
 	return err;
 }
 
-static int __symexec_reconcile_link_do(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_link_do(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
 		u64 ino, struct btrfs_acid_log_file * file);
-static int __symexec_reconcile_unlink_do(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir, u64 ino,
 		struct btrfs_acid_log_file * file, int record_dir, u8 type);
 
-static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
-		struct symexec_ctl * symexec,
+static int __slr_reconcile_rename(struct btrfs_trans_handle * trans,
+		struct slr_ctl * slr,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 	struct btrfs_acid_log_rename * rename_entry;
 	struct inode * old_dir, * new_dir;
@@ -2380,9 +2380,9 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 	new_dir = dir;
 
 	old_dir_ino = rename_entry->old_file.parent_location.objectid;
-	err = __symexec_get_mapped(symexec, old_dir_ino, &old_dir_ino);
+	err = __slr_get_mapped(slr, old_dir_ino, &old_dir_ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("GET-MAPPED > Error > old dir ino: %llu\n", old_dir_ino);
+		BTRFS_SLR_DBG("GET-MAPPED > Error > old dir ino: %llu\n", old_dir_ino);
 		return err;
 	} else {
 		if (old_dir_ino != dir->i_ino) {
@@ -2391,7 +2391,7 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 			key.offset = 0;
 			old_dir = btrfs_iget(sb, &key, snap->root, NULL);
 			if (!old_dir) {
-				BTRFS_SYM_DBG("INODE-GET > Error > old dir: %llu\n", old_dir_ino);
+				BTRFS_SLR_DBG("INODE-GET > Error > old dir: %llu\n", old_dir_ino);
 				return PTR_ERR(old_dir);
 			}
 			put_old_dir = 1;
@@ -2401,26 +2401,26 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 
 	if (rename_entry->unlinked_file) {
 		unlinked_ino = rename_entry->unlinked_file->location.objectid;
-		err = __symexec_get_mapped(symexec, unlinked_ino, &unlinked_ino);
+		err = __slr_get_mapped(slr, unlinked_ino, &unlinked_ino);
 		if (err < 0) {
-			BTRFS_SYM_DBG("GET-MAPPED > Error > ino: %llu\n", unlinked_ino);
+			BTRFS_SLR_DBG("GET-MAPPED > Error > ino: %llu\n", unlinked_ino);
 			return err;
 //		} else if (err) {
 //			/* The file was created in the master copy, and unlinked on rename.
 //			 * We have no use for it.
 //			 */
 		} else {
-			err = __symexec_reconcile_unlink_do(trans, txsv, snap, dir,
+			err = __slr_reconcile_unlink_do(trans, txsv, snap, dir,
 					unlinked_ino,
 					rename_entry->unlinked_file, 0, BTRFS_ACID_LOG_RENAME);
 			if (err < 0) {
-				BTRFS_SYM_DBG("UNLINK-DO > Error > dir: %llu, ino: %llu\n",
+				BTRFS_SLR_DBG("UNLINK-DO > Error > dir: %llu, ino: %llu\n",
 						dir->i_ino, unlinked_ino);
 				if (put_old_dir)
 					iput(old_dir);
 				return err;
 			}
-			BTRFS_SYM_DBG("UNLINKED FILE > name: %.*s, dir: %llu, ino: %lu\n",
+			BTRFS_SLR_DBG("UNLINKED FILE > name: %.*s, dir: %llu, ino: %lu\n",
 					rename_entry->unlinked_file->name.len,
 					rename_entry->unlinked_file->name.name,
 					dir->i_ino, unlinked_ino);
@@ -2428,9 +2428,9 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 	}
 
 	old_ino = rename_entry->old_file.location.objectid;
-	err = __symexec_get_mapped(symexec, old_ino, &old_ino);
+	err = __slr_get_mapped(slr, old_ino, &old_ino);
 	if (err < 0) {
-		BTRFS_SYM_DBG("GET-MAPPED > Error > old ino: %llu\n", old_ino);
+		BTRFS_SLR_DBG("GET-MAPPED > Error > old ino: %llu\n", old_ino);
 		if (put_old_dir)
 			iput(old_dir);
 		return err;
@@ -2445,18 +2445,18 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 	}
 
 //	if (old_ino_mapped) {
-//		err = symexec_nlinks_get(symexec, old_ino, &old_ino_nlinks);
+//		err = slr_nlinks_get(slr, old_ino, &old_ino_nlinks);
 //		if (err < 0) {
-//			BTRFS_SYM_DBG("GET-NLINKS > old ino: %llu\n", old_ino);
+//			BTRFS_SLR_DBG("GET-NLINKS > old ino: %llu\n", old_ino);
 //			if (put_old_dir)
 //				iput(old_dir);
 //			return err;
 //		}
 //		if (old_ino_nlinks > 1) {
-	err = __symexec_reconcile_link_do(trans, txsv, snap,
+	err = __slr_reconcile_link_do(trans, txsv, snap,
 			new_dir, old_ino, entry->file);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LINK-DO > dir: %lu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("LINK-DO > dir: %lu, ino: %llu, name: %.*s\n",
 				new_dir->i_ino, old_ino,
 				entry->file->name.len, entry->file->name.name);
 		if (put_old_dir)
@@ -2465,14 +2465,14 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 	}
 //		}
 //	else {
-//			err = __symexec_reconcile_
+//			err = __slr_reconcile_
 //		}
 //	}
 
-	err = __symexec_reconcile_unlink_do(trans, txsv, snap, old_dir, old_ino,
+	err = __slr_reconcile_unlink_do(trans, txsv, snap, old_dir, old_ino,
 			&rename_entry->old_file, put_old_dir, BTRFS_ACID_LOG_RENAME);
 	if (err < 0) {
-		BTRFS_SYM_DBG("UNLINK-DO > old dir: %lu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("UNLINK-DO > old dir: %lu, ino: %llu, name: %.*s\n",
 				old_dir->i_ino, old_ino,
 				entry->file->name.len, entry->file->name.name);
 		if (put_old_dir)
@@ -2480,7 +2480,7 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 		return err;
 	}
 
-	BTRFS_SYM_DBG("RENAME > Success!\n");
+	BTRFS_SLR_DBG("RENAME > Success!\n");
 
 	if (put_old_dir)
 		iput(old_dir);
@@ -2494,10 +2494,10 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 	new_dir_ino = rename_entry->new_file.parent_location.objectid;
 
 	if (rename_entry->unlinked_file) {
-		err = __symexec_reconcile_unlink_do(trans, txsv, snap, new_dir,
+		err = __slr_reconcile_unlink_do(trans, txsv, snap, new_dir,
 				rename_entry->unlinked_file, 0, BTRFS_ACID_LOG_RENAME);
 		if (err < 0) {
-			BTRFS_SYM_DBG("UNLINK-DO > Error\n");
+			BTRFS_SLR_DBG("UNLINK-DO > Error\n");
 			return err;
 		}
 	}
@@ -2506,10 +2506,10 @@ static int __symexec_reconcile_rename(struct btrfs_trans_handle * trans,
 
 }
 
-static int __symexec_reconcile_rmdir(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_rmdir(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 
 	struct qstr * name;
@@ -2541,7 +2541,7 @@ static int __symexec_reconcile_rmdir(struct btrfs_trans_handle * trans,
 	if (!err)
 		btrfs_i_size_write(inode, 0);
 	else {
-		BTRFS_SYM_DBG("UNLINK-INODE > Error > d: %llu, ino: %llu, name: %.*s\n",
+		BTRFS_SLR_DBG("UNLINK-INODE > Error > d: %llu, ino: %llu, name: %.*s\n",
 				dir->i_ino, inode->i_ino, name->len, name->name);
 	}
 //out:
@@ -2551,7 +2551,7 @@ static int __symexec_reconcile_rmdir(struct btrfs_trans_handle * trans,
 	return err;
 }
 
-static int __symexec_reconcile_unlink_do(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir, u64 ino,
 		struct btrfs_acid_log_file * file, int record_dir, u8 type)
@@ -2566,14 +2566,14 @@ static int __symexec_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 
 	name = &file->name;
 
-	BTRFS_SYM_DBG("UNLINK-DO > trans: %p, txsv: %p, snap: %p, "
+	BTRFS_SLR_DBG("UNLINK-DO > trans: %p, txsv: %p, snap: %p, "
 			"dir: %p, file: %p", trans, txsv, snap, dir, file);
-	BTRFS_SYM_DBG("UNLINK-DO > file name: %.*s, name: %p\n",
+	BTRFS_SLR_DBG("UNLINK-DO > file name: %.*s, name: %p\n",
 			file->name.len, file->name.name, name);
 
 //	trans = btrfs_start_transaction(snap->root, 0);
 //	if (IS_ERR(*trans)) {
-//		BTRFS_SYM_DBG("START-TRANS > Error\n");
+//		BTRFS_SLR_DBG("START-TRANS > Error\n");
 //		return PTR_ERR(*trans);
 //	}
 //	*trans->block_rsv = &snap->root->fs_info->global_block_rsv;
@@ -2597,10 +2597,10 @@ static int __symexec_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 
 	if (inode->i_nlink == 0) {
 		if (trans->block_rsv)
-			BTRFS_SYM_DBG("ORPHAN > blk rsv: %llu\n",
+			BTRFS_SLR_DBG("ORPHAN > blk rsv: %llu\n",
 				trans->block_rsv->reserved);
 		else
-			BTRFS_SYM_DBG("ORPHAN > blk rsv: NULL\n");
+			BTRFS_SLR_DBG("ORPHAN > blk rsv: NULL\n");
 
 		err = btrfs_orphan_add(trans, inode);
 		BUG_ON(err);
@@ -2609,10 +2609,10 @@ static int __symexec_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 	return err;
 }
 
-static int __symexec_reconcile_unlink(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_unlink(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 
 //	struct btrfs_acid_log_unlink * unlink_entry;
@@ -2631,7 +2631,7 @@ static int __symexec_reconcile_unlink(struct btrfs_trans_handle * trans,
 //	trans->block_rsv = &snap->root->fs_info->global_block_rsv;
 
 	/* record dir; not the result of a rename operation */
-	return __symexec_reconcile_unlink_do(trans, txsv, snap,
+	return __slr_reconcile_unlink_do(trans, txsv, snap,
 			dir, entry->ino, entry->file, 1, BTRFS_ACID_LOG_UNLINK);
 
 #if 0
@@ -2661,10 +2661,10 @@ static int __symexec_reconcile_unlink(struct btrfs_trans_handle * trans,
 #endif
 }
 
-static int __symexec_reconcile_mknod(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_mknod(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 	struct btrfs_acid_log_mknod * mknod_entry;
 	struct inode * inode;
@@ -2715,7 +2715,7 @@ out_unlock:
 	return err;
 }
 
-static int __symexec_reconcile_link_do(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_link_do(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
 		u64 ino, struct btrfs_acid_log_file * file)
@@ -2739,7 +2739,7 @@ static int __symexec_reconcile_link_do(struct btrfs_trans_handle * trans,
 	inode = btrfs_iget(snap->root->fs_info->sb,
 			&snap_ino_key, snap->root, NULL);
 	if (IS_ERR_OR_NULL(inode)) {
-		BTRFS_SYM_DBG("INODE-GET > Error obtaining %llu\n", ino);
+		BTRFS_SLR_DBG("INODE-GET > Error obtaining %llu\n", ino);
 		return PTR_ERR(inode);
 	}
 
@@ -2760,7 +2760,7 @@ static int __symexec_reconcile_link_do(struct btrfs_trans_handle * trans,
 	btrfs_update_inode_block_group(trans, dir);
 	err = btrfs_update_inode(trans, snap->root, inode);
 	if (err) {
-		BTRFS_SYM_DBG("UPDATE-INODE > inode: %p, inode i_ino: %llu, ino: %llu, "
+		BTRFS_SLR_DBG("UPDATE-INODE > inode: %p, inode i_ino: %llu, ino: %llu, "
 				"dir: %llu, name: %.*s, btrfs inode: %p, "
 				"location: [%llu %d %llu]\n",
 				inode, inode->i_ino, ino, dir->i_ino,
@@ -2775,7 +2775,7 @@ static int __symexec_reconcile_link_do(struct btrfs_trans_handle * trans,
 
 out:
 	if (drop_inode) {
-		BTRFS_SYM_DBG("DROP INODE > DEC LINK COUNT for ino %llu\n",
+		BTRFS_SLR_DBG("DROP INODE > DEC LINK COUNT for ino %llu\n",
 				inode->i_ino);
 		inode_dec_link_count(inode);
 	}
@@ -2784,10 +2784,10 @@ out:
 	return err;
 }
 
-static int __symexec_reconcile_link(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_link(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 //	struct btrfs_acid_log_link * link_entry;
 //	struct qstr * name;
@@ -2802,7 +2802,7 @@ static int __symexec_reconcile_link(struct btrfs_trans_handle * trans,
 	if (!trans || !txsv || !snap || !dir || !entry)
 		return -EINVAL;
 
-	return __symexec_reconcile_link_do(trans, txsv, snap, dir,
+	return __slr_reconcile_link_do(trans, txsv, snap, dir,
 			entry->ino, entry->file);
 #if 0
 	name = &entry->file->name;
@@ -2814,7 +2814,7 @@ static int __symexec_reconcile_link(struct btrfs_trans_handle * trans,
 	inode = btrfs_iget(snap->root->fs_info->sb,
 			&snap_ino_key, snap->root, NULL);
 	if (IS_ERR_OR_NULL(inode)) {
-		BTRFS_SYM_DBG("INODE-GET > Error obtaining %llu\n", entry->ino);
+		BTRFS_SLR_DBG("INODE-GET > Error obtaining %llu\n", entry->ino);
 		return PTR_ERR(inode);
 	}
 
@@ -2840,7 +2840,7 @@ static int __symexec_reconcile_link(struct btrfs_trans_handle * trans,
 
 out:
 	if (drop_inode) {
-		BTRFS_SYM_DBG("DROP INODE > DEC LINK COUNT for ino %llu\n",
+		BTRFS_SLR_DBG("DROP INODE > DEC LINK COUNT for ino %llu\n",
 				inode->i_ino);
 		inode_dec_link_count(inode);
 	}
@@ -2855,10 +2855,10 @@ void btrfs_set_inode_extent_io_ops(struct inode * inode);
 void btrfs_set_inode_aops(struct inode * inode);
 
 
-static int __symexec_reconcile_create(struct btrfs_trans_handle * trans,
+static int __slr_reconcile_create(struct btrfs_trans_handle * trans,
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 	struct btrfs_acid_log_create * create_entry;
 	struct qstr * name;
@@ -2909,7 +2909,7 @@ static int __symexec_reconcile_create(struct btrfs_trans_handle * trans,
 //			&create_entry->file.location, txsv->root, NULL);
 			original_location, txsv->root, NULL);
 	if (IS_ERR(original_inode)) {
-		BTRFS_SYM_DBG("INODE-GET > Error\n");
+		BTRFS_SLR_DBG("INODE-GET > Error\n");
 //		goto out_unlock;
 		return PTR_ERR(original_inode);
 	}
@@ -2931,7 +2931,7 @@ static int __symexec_reconcile_create(struct btrfs_trans_handle * trans,
 //			&create_entry->file.location, txsv->root, NULL);
 			original_location, txsv->root, NULL);
 	if (IS_ERR_OR_NULL(original_inode)) {
-		BTRFS_SYM_DBG("INODE-GET > Error\n");
+		BTRFS_SLR_DBG("INODE-GET > Error\n");
 		goto out_unlock;
 	}
 #endif
@@ -2981,9 +2981,9 @@ out_unlock:
 
 //	original_ino = create_entry->ino;
 	original_ino = entry->log_entry->ino;
-	BTRFS_SYM_DBG("Taking care of extents for inode %llu -> %llu\n",
+	BTRFS_SLR_DBG("Taking care of extents for inode %llu -> %llu\n",
 			original_ino, entry->ino);
-	BTRFS_SYM_DBG("OBJECTID > snap root: %llu, txsv root: %llu\n",
+	BTRFS_SLR_DBG("OBJECTID > snap root: %llu, txsv root: %llu\n",
 			snap->root->root_key.objectid, txsv->root->root_key.objectid);
 
 	err = -ENOMEM;
@@ -2999,7 +2999,7 @@ out_unlock:
 
 	err = btrfs_lookup_file_extent(NULL, txsv->root, path, original_ino, 0, 0);
 	if (err < 0) {
-		BTRFS_SYM_DBG("LOOKUP-FILE-EXTENT > Error\n");
+		BTRFS_SLR_DBG("LOOKUP-FILE-EXTENT > Error\n");
 		goto out;
 	}
 
@@ -3007,7 +3007,7 @@ out_unlock:
 		leaf = path->nodes[0];
 		slot = path->slots[0];
 
-		BTRFS_SYM_DBG("\tITEM > leaf: %p, slot: %d, leaf nritems: %d, bytenr: %llu\n",
+		BTRFS_SLR_DBG("\tITEM > leaf: %p, slot: %d, leaf nritems: %d, bytenr: %llu\n",
 				leaf, slot, btrfs_header_nritems(leaf), btrfs_header_bytenr(leaf));
 
 		if (slot >= btrfs_header_nritems(leaf))
@@ -3023,7 +3023,7 @@ out_unlock:
 //		btrfs_item_key(leaf, &disk_key, slot);
 //		btrfs_disk_key_to_cpu(&item_key, &disk_key);
 		btrfs_item_key_to_cpu(leaf, &item_key, slot);
-		BTRFS_SYM_DBG("\tITEM FOUND > key: [%llu %d %llu]\n",
+		BTRFS_SLR_DBG("\tITEM FOUND > key: [%llu %d %llu]\n",
 				item_key.objectid, item_key.type, item_key.offset);
 		if (item_key.objectid > original_ino)
 			break;
@@ -3041,10 +3041,10 @@ out_unlock:
 			break;
 		}
 
-		BTRFS_SYM_DBG("\tEXTENT ITEM > size: %u\n", size);
+		BTRFS_SLR_DBG("\tEXTENT ITEM > size: %u\n", size);
 		read_extent_buffer(leaf, buf, btrfs_item_ptr_offset(leaf, slot), size);
 		item_type = le8_to_cpu(((struct btrfs_file_extent_item *) buf)->type);
-		BTRFS_SYM_DBG("\tEXTENT ITEM > type: %d, ram: %llu\n",
+		BTRFS_SLR_DBG("\tEXTENT ITEM > type: %d, ram: %llu\n",
 				item_type,
 				((struct btrfs_file_extent_item *) buf)->ram_bytes);
 
@@ -3069,7 +3069,7 @@ out_unlock:
 		if ((item_type == BTRFS_FILE_EXTENT_REG)
 				|| (item_type == BTRFS_FILE_EXTENT_PREALLOC)) {
 
-			BTRFS_SYM_DBG("\tEXTENT ITEM > Increasing extent refs\n");
+			BTRFS_SLR_DBG("\tEXTENT ITEM > Increasing extent refs\n");
 			ei = (struct btrfs_file_extent_item *) buf;
 			item_bytenr = le64_to_cpu(ei->disk_bytenr);
 			item_numbytes = le64_to_cpu(ei->disk_num_bytes);
@@ -3080,7 +3080,7 @@ out_unlock:
 					entry->ino,
 					item_offset);
 			if (err < 0) {
-				BTRFS_SYM_DBG("\tEXTENT ITEM > Error increasing extent refs\n");
+				BTRFS_SLR_DBG("\tEXTENT ITEM > Error increasing extent refs\n");
 			}
 		}
 
@@ -3103,11 +3103,11 @@ out:
 }
 
 
-static int __symexec_reconcile_mkdir(struct btrfs_trans_handle * trans,
-//static int __symexec_reconcile_mkdir(
+static int __slr_reconcile_mkdir(struct btrfs_trans_handle * trans,
+//static int __slr_reconcile_mkdir(
 		struct btrfs_acid_snapshot * txsv,
 		struct btrfs_acid_snapshot * snap, struct inode * dir,
-		struct symexec_entry * entry)
+		struct slr_entry * entry)
 {
 //	struct btrfs_trans_handle * trans;
 	struct btrfs_acid_log_mkdir * mkdir_entry;
@@ -3127,14 +3127,14 @@ static int __symexec_reconcile_mkdir(struct btrfs_trans_handle * trans,
 
 //	trans = btrfs_start_transaction(snap->root, 5);
 //	if (IS_ERR(trans)) {
-//		BTRFS_SYM_DBG("START-TRANS > Error\n");
+//		BTRFS_SLR_DBG("START-TRANS > Error\n");
 //		err = PTR_ERR(trans);
 ////		break;
 //		return err;
 //	}
 //	btrfs_set_trans_block_group(trans, dir);
 
-	BTRFS_SYM_DBG("Creating Dir > name: %.*s, "
+	BTRFS_SLR_DBG("Creating Dir > name: %.*s, "
 			"ino: %llu, dir: %lu, mode: %d\n",
 			name->len, name->name,
 			entry->ino, dir->i_ino, mkdir_entry->mode);
@@ -3144,17 +3144,17 @@ static int __symexec_reconcile_mkdir(struct btrfs_trans_handle * trans,
 			entry->ino, BTRFS_I(dir)->block_group,
 			(mkdir_entry->mode|S_IFDIR), &index);
 	if (IS_ERR(inode)) {
-		BTRFS_SYM_DBG("NEW-INODE > Error\n");
+		BTRFS_SLR_DBG("NEW-INODE > Error\n");
 		return PTR_ERR(inode);
 	}
 
-	BTRFS_SYM_DBG("\tmode: %u, uid: %u, gid: %u\n",
+	BTRFS_SLR_DBG("\tmode: %u, uid: %u, gid: %u\n",
 			inode->i_mode, inode->i_uid, inode->i_gid);
 
 	err = btrfs_init_inode_security(trans, inode, dir);
 	if (err < 0)
 		goto out_fail;
-	BTRFS_SYM_DBG("\tAFTER SECURITY > mode: %u, uid: %u, gid: %u\n",
+	BTRFS_SLR_DBG("\tAFTER SECURITY > mode: %u, uid: %u, gid: %u\n",
 			inode->i_mode, inode->i_uid, inode->i_gid);
 
 	inode->i_op = &btrfs_acid_dir_inode_operations;
@@ -3169,7 +3169,7 @@ static int __symexec_reconcile_mkdir(struct btrfs_trans_handle * trans,
 	err = btrfs_add_link(trans, dir, inode,
 			name->name, name->len, 0, index);
 	if (err < 0) {
-		BTRFS_SYM_DBG("ADD-LINK > Error\n");
+		BTRFS_SLR_DBG("ADD-LINK > Error\n");
 		goto out_fail;
 	}
 
@@ -3185,7 +3185,7 @@ out_fail:
 	return err;
 }
 
-static int __symexec_reconcile_interval(struct inode * inode_from,
+static int __slr_reconcile_interval(struct inode * inode_from,
 		struct inode * inode_to, pgoff_t first, pgoff_t last)
 {
 	struct btrfs_root * inode_to_root, * inode_from_root;
@@ -3237,12 +3237,12 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 	num_bytes = space_to_reserve;
 	end_of_last_block = (start_pos + num_bytes - 1);
 
-	BTRFS_SYM_DBG("Preparing pages:\n");
-	BTRFS_SYM_DBG("    num_pages = %d\n", nr_pages);
-	BTRFS_SYM_DBG("    pos = %llu\n", start_pos);
-	BTRFS_SYM_DBG("    our start = %llu, (start_pos) = %llu\n",
+	BTRFS_SLR_DBG("Preparing pages:\n");
+	BTRFS_SLR_DBG("    num_pages = %d\n", nr_pages);
+	BTRFS_SLR_DBG("    pos = %llu\n", start_pos);
+	BTRFS_SLR_DBG("    our start = %llu, (start_pos) = %llu\n",
 			start_pos, (start_pos & ~((u64) inode_to_root->sectorsize - 1)));
-	BTRFS_SYM_DBG("    our last pos = %llu, (last_pos) = %llu\n",
+	BTRFS_SLR_DBG("    our last pos = %llu, (last_pos) = %llu\n",
 			end_of_last_block,
 			((u64) (start_pos >> PAGE_CACHE_SHIFT) + nr_pages) << PAGE_CACHE_SHIFT);
 
@@ -3253,7 +3253,7 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 		goto free_snap_pages;
 	}
 
-	BTRFS_SYM_DBG(
+	BTRFS_SLR_DBG(
 			"Reconciling %d pages: [%d, %d]; reserving %llu bytes\n",
 			nr_pages, first, last, space_to_reserve);
 
@@ -3269,7 +3269,7 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 		}
 
 #if 0
-		BTRFS_SYM_DBG("PAGE %d CONTENTS:\n", index);
+		BTRFS_SLR_DBG("PAGE %d CONTENTS:\n", index);
 #endif
 
 //		pagefault_disable();
@@ -3279,7 +3279,7 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 #if 0
 		memset(from_tmp_str, 0, 20);
 		memcpy(from_tmp_str, from_addr, 19);
-		BTRFS_SYM_DBG("        From (initial): %s\n", from_tmp_str);
+		BTRFS_SLR_DBG("        From (initial): %s\n", from_tmp_str);
 #endif
 
 		to_addr = kmap(inode_to_pages[i]);
@@ -3304,8 +3304,8 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 		page_cache_release(page);
 
 #if 0
-		BTRFS_SYM_DBG("        From (final): %s\n", from_tmp_str);
-		BTRFS_SYM_DBG("        To (final): %s\n", to_tmp_str);
+		BTRFS_SLR_DBG("        From (final): %s\n", from_tmp_str);
+		BTRFS_SLR_DBG("        To (final): %s\n", to_tmp_str);
 #endif
 	}
 
@@ -3345,20 +3345,20 @@ out:
 	return ret;
 }
 
-static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
+static int __slr_reconcile_blocks(struct slr_ctl * slr,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap,
-		struct symexec_list_tree_entry * lst_entry)
+		struct slr_list_tree_entry * lst_entry)
 {
 	struct btrfs_key txsv_key, snap_key;
 	struct inode * snap_inode, * txsv_inode;
-	struct symexec_entry * entry;
+	struct slr_entry * entry;
 	struct btrfs_acid_log_rw * rw;
 
 	struct rb_root pages_tree;
 	struct rb_node * node;
 	pgoff_t start, end;
-	struct symexec_interval_entry * interval;
-	struct symexec_interval_entry * best_interval;
+	struct slr_interval_entry * interval;
+	struct slr_interval_entry * best_interval;
 	struct btrfs_fs_info * fs_info;
 //	struct rb_node * to_erase;
 
@@ -3366,7 +3366,7 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 
 	int err = 0;
 
-	if (!symexec || !txsv || !snap || !lst_entry)
+	if (!slr || !txsv || !snap || !lst_entry)
 		return -EINVAL;
 
 	pages_tree = RB_ROOT;
@@ -3374,7 +3374,7 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 	fs_info = snap->root->fs_info;
 
 	if (list_empty(&lst_entry->list)) {
-		BTRFS_SYM_DBG("LIST IS EMPTY\n");
+		BTRFS_SLR_DBG("LIST IS EMPTY\n");
 		return 0;
 	}
 
@@ -3382,7 +3382,7 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 	// therefore, txsv_key.objectid == snap_key.objectid
 //	txsv_key.objectid = lst_entry->ino;
 
-//	entry = list_entry(&lst_entry->list.next, struct symexec_entry, list);
+//	entry = list_entry(&lst_entry->list.next, struct slr_entry, list);
 //	txsv_key.objectid = entry->log_entry->ino;
 	txsv_key.objectid = lst_entry->ino;
 	txsv_key.type = BTRFS_INODE_ITEM_KEY;
@@ -3392,22 +3392,22 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 	snap_key.type = BTRFS_INODE_ITEM_KEY;
 	snap_key.offset = 0;
 
-//	err = __symexec_get_mapped(symexec, txsv_key.objectid,
+//	err = __slr_get_mapped(slr, txsv_key.objectid,
 //			&snap_key.objectid);
 //	if (err < 0) {
-//		BTRFS_SYM_DBG("GET-MAPPED-INODE > ino: %llu\n",
+//		BTRFS_SLR_DBG("GET-MAPPED-INODE > ino: %llu\n",
 //				lst_entry->ino);
 //		return err;
 //	}
 
-	BTRFS_SYM_DBG("RECONCILING BLOCKS FOR INODE (%llu -> %llu)\n", 
+	BTRFS_SLR_DBG("RECONCILING BLOCKS FOR INODE (%llu -> %llu)\n",
 			txsv_key.objectid, snap_key.objectid);
-	BTRFS_SYM_DBG("   TXSV generation = %llu\n", atomic_read(&txsv->gen));
-	BTRFS_SYM_DBG("   ROOTS:\n");
-	BTRFS_SYM_DBG("       Snapshot: [%llu %d %llu]\n",
+	BTRFS_SLR_DBG("   TXSV generation = %llu\n", atomic_read(&txsv->gen));
+	BTRFS_SLR_DBG("   ROOTS:\n");
+	BTRFS_SLR_DBG("       Snapshot: [%llu %d %llu]\n",
 				snap->root->root_key.objectid, snap->root->root_key.type,
 				snap->root->root_key.offset);
-	BTRFS_SYM_DBG("       TxSv: [%llu %d %llu]\n",
+	BTRFS_SLR_DBG("       TxSv: [%llu %d %llu]\n",
 					txsv->root->root_key.objectid, txsv->root->root_key.type,
 					txsv->root->root_key.offset);
 
@@ -3421,7 +3421,7 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 
 		node = __tree_search(&pages_tree, rw->first_page);
 		if (node) {
-			interval = rb_entry(node, struct symexec_interval_entry, rb_node);
+			interval = rb_entry(node, struct slr_interval_entry, rb_node);
 			if (interval->end < rw->last_page)
 				interval->end = rw->last_page;
 		} else {
@@ -3432,17 +3432,17 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 		}
 	}
 
-	BTRFS_SYM_DBG("BLOCKS TREE (BEFORE)\n");
+	BTRFS_SLR_DBG("BLOCKS TREE (BEFORE)\n");
 	for (node = rb_first(&pages_tree); node; node = rb_next(node)) {
-		interval = rb_entry(node, struct symexec_interval_entry, rb_node);
-		BTRFS_SYM_DBG("s: %llu, end: %llu\n", interval->start, interval->end);
+		interval = rb_entry(node, struct slr_interval_entry, rb_node);
+		BTRFS_SLR_DBG("s: %llu, end: %llu\n", interval->start, interval->end);
 	}
 	/* Populated. Now let us process the tree in order to get as few intervals
 	 * as possible.
 	 */
 	best_interval = NULL;
 	for (node = rb_first(&pages_tree); node; ) {
-		interval = rb_entry(node, struct symexec_interval_entry, rb_node);
+		interval = rb_entry(node, struct slr_interval_entry, rb_node);
 		if (!best_interval) {
 			best_interval = interval;
 			node = rb_next(node);
@@ -3464,7 +3464,7 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 
 	snap_inode = btrfs_iget(fs_info->sb, &snap_key, snap->root, NULL);
 	if (IS_ERR_OR_NULL(snap_inode)) {
-		BTRFS_SYM_DBG("SNAP-INODE-GET > inode: %p\n", snap_inode);
+		BTRFS_SLR_DBG("SNAP-INODE-GET > inode: %p\n", snap_inode);
 		return (IS_ERR(snap_inode) ? PTR_ERR(snap_inode) : -ENOENT);
 	}
 
@@ -3472,30 +3472,30 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 
 	txsv_inode = btrfs_iget(fs_info->sb, &txsv_key, txsv->root, NULL);
 	if (IS_ERR_OR_NULL(txsv_inode)) {
-		BTRFS_SYM_DBG("TXSV-INODE-GET > inode: %p\n", txsv_inode);
+		BTRFS_SLR_DBG("TXSV-INODE-GET > inode: %p\n", txsv_inode);
 		return (IS_ERR(txsv_inode) ? PTR_ERR(txsv_inode) : -ENOENT);
 	}
 
-	BTRFS_SYM_DBG("INODES: snap = %llu, txsv = %llu\n",
+	BTRFS_SLR_DBG("INODES: snap = %llu, txsv = %llu\n",
 			snap_inode->i_ino, txsv_inode->i_ino);
-	BTRFS_SYM_DBG("        snap inode size = %llu\n", snap_inode->i_size);
-	BTRFS_SYM_DBG("        snap inode blks = %d\n",
+	BTRFS_SLR_DBG("        snap inode size = %llu\n", snap_inode->i_size);
+	BTRFS_SLR_DBG("        snap inode blks = %d\n",
 				(snap_inode->i_size >> PAGE_CACHE_SIZE) + 1);
-	BTRFS_SYM_DBG("        txsv inode size = %llu\n", txsv_inode->i_size);
-	BTRFS_SYM_DBG("        txsv inode blks = %d\n",
+	BTRFS_SLR_DBG("        txsv inode size = %llu\n", txsv_inode->i_size);
+	BTRFS_SLR_DBG("        txsv inode blks = %d\n",
 				(txsv_inode->i_size >> PAGE_CACHE_SIZE) + 1);
 
 
-	BTRFS_SYM_DBG("BLOCKS TREE (AFTER)\n");
+	BTRFS_SLR_DBG("BLOCKS TREE (AFTER)\n");
 
 	for (node = rb_first(&pages_tree); node; node = rb_next(node)) {
-		interval = rb_entry(node, struct symexec_interval_entry, rb_node);
+		interval = rb_entry(node, struct slr_interval_entry, rb_node);
 
-		BTRFS_SYM_DBG("s: %llu, end: %llu\n", interval->start, interval->end);
-		err = __symexec_reconcile_interval(txsv_inode, snap_inode,
+		BTRFS_SLR_DBG("s: %llu, end: %llu\n", interval->start, interval->end);
+		err = __slr_reconcile_interval(txsv_inode, snap_inode,
 				interval->start, interval->end);
 		if (err < 0) {
-			BTRFS_SYM_DBG("RECONCILE-INTERVAL > Error > s: %llu, e: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE-INTERVAL > Error > s: %llu, e: %llu\n",
 					interval->start, interval->end);
 			break;
 		}
@@ -3513,13 +3513,13 @@ static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 }
 
 /**
- * __symexec_reconcile_trans_numitems - Returns the # items for the transaction.
+ * __slr_reconcile_trans_numitems - Returns the # items for the transaction.
  *
  * This solution isn't pretty, but we are tired and we barely have enough
  * imagination to write this description, let alone thing how to do this in
  * a simpler way. Sorry.
  */
-static int __symexec_reconcile_trans_numitems(struct symexec_entry * entry)
+static int __slr_reconcile_trans_numitems(struct slr_entry * entry)
 {
 	int items = 0;
 	if (!entry)
@@ -3546,13 +3546,13 @@ static int __symexec_reconcile_trans_numitems(struct symexec_entry * entry)
 	return items;
 }
 
-static int symexec_reconcile(struct symexec_ctl * symexec,
+static int slr_reconcile(struct slr_ctl * slr,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap)
 {
 	struct btrfs_fs_info * fs_info;
 	struct rb_node * node;
-	struct symexec_list_tree_entry * lst_entry;
-	struct symexec_entry * entry;
+	struct slr_list_tree_entry * lst_entry;
+	struct slr_entry * entry;
 
 	u64 dir_ino;
 	u64 index;
@@ -3568,14 +3568,14 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 	int err = 0;
 
-	if (!symexec || !txsv || !snap)
+	if (!slr || !txsv || !snap)
 		return -EINVAL;
 
 	fs_info = snap->root->fs_info;
 
 #if 0
 	list_for_each_entry(inode, &fs_info->sb->s_inodes, i_sb_list) {
-		BTRFS_SYM_DBG("ACTIVE INODE > ino: %llu, location: %llu, root: %llu\n",
+		BTRFS_SLR_DBG("ACTIVE INODE > ino: %llu, location: %llu, root: %llu\n",
 				inode->i_ino, BTRFS_I(inode)->location.objectid,
 				BTRFS_I(inode)->root->root_key.objectid);
 	}
@@ -3589,36 +3589,36 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 		return PTR_ERR(trans);
 	btrfs_commit_transaction(trans, txsv->root);
 
-	BTRFS_SYM_PRINT("RECONCILING LOG\n");
+	BTRFS_SLR_PRINT("RECONCILING LOG\n");
 
-	list_for_each_entry(entry, &symexec->reconcile_log, reconcile_list) {
+	list_for_each_entry(entry, &slr->reconcile_log, reconcile_list) {
 		key.objectid = entry->file->parent_location.objectid;
 		key.type = BTRFS_INODE_ITEM_KEY;
 		key.offset = 0;
 
-		err = __symexec_get_mapped(symexec, key.objectid,
+		err = __slr_get_mapped(slr, key.objectid,
 				&key.objectid);
 		if (err < 0) {
-			BTRFS_SYM_DBG("GET-MAPPED-PARENT > ino: %llu\n",
+			BTRFS_SLR_DBG("GET-MAPPED-PARENT > ino: %llu\n",
 					entry->file->parent_location.objectid);
 			return err;
 		}
 
-		BTRFS_SYM_DBG("RECONCILE > parent ino: %llu, mapped: %llu\n",
+		BTRFS_SLR_DBG("RECONCILE > parent ino: %llu, mapped: %llu\n",
 				key.objectid,
 				entry->file->parent_location.objectid);
 
 		dir = btrfs_iget(fs_info->sb, &key, snap->root, NULL);
 		if (IS_ERR_OR_NULL(dir)) {
-			BTRFS_SYM_DBG("INODE-GET > parent: %p\n", dir);
+			BTRFS_SLR_DBG("INODE-GET > parent: %p\n", dir);
 			return (IS_ERR(dir) ? PTR_ERR(dir) : -ENOENT);
 		}
 
-		trans_num_items = __symexec_reconcile_trans_numitems(entry);
+		trans_num_items = __slr_reconcile_trans_numitems(entry);
 
 		trans = btrfs_start_transaction(snap->root, trans_num_items);
 		if (IS_ERR(trans)) {
-			BTRFS_SYM_DBG("START-TRANS > Error\n");
+			BTRFS_SLR_DBG("START-TRANS > Error\n");
 			err = PTR_ERR(trans);
 			break;
 		}
@@ -3626,44 +3626,44 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 		switch (entry->log_entry->type) {
 		case BTRFS_ACID_LOG_CREATE:
-			BTRFS_SYM_DBG("RECONCILE > CREATE p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > CREATE p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_create(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_create(trans, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_MKDIR:
-			BTRFS_SYM_DBG("RECONCILE > MKDIR p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > MKDIR p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_mkdir(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_mkdir(trans, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_UNLINK:
-			BTRFS_SYM_DBG("RECONCILE > UNLINK p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > UNLINK p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_unlink(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_unlink(trans, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_LINK:
-			BTRFS_SYM_DBG("RECONCILE > LINK p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > LINK p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_link(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_link(trans, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_RENAME:
-			BTRFS_SYM_DBG("RECONCILE > RENAME p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > RENAME p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_rename(trans, symexec, txsv, snap, dir, entry);
+			err = __slr_reconcile_rename(trans, slr, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_RMDIR:
-			BTRFS_SYM_DBG("RECONCILE > RMDIR p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > RMDIR p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_rmdir(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_rmdir(trans, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_MKNOD:
-			BTRFS_SYM_DBG("RECONCILE > MKNOD p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > MKNOD p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_mknod(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_mknod(trans, txsv, snap, dir, entry);
 			break;
 		case BTRFS_ACID_LOG_SYMLINK:
-			BTRFS_SYM_DBG("RECONCILE > SYMLINK p: %llu, i: %llu\n",
+			BTRFS_SLR_DBG("RECONCILE > SYMLINK p: %llu, i: %llu\n",
 					dir->i_ino, entry->ino);
-			err = __symexec_reconcile_create(trans, txsv, snap, dir, entry);
+			err = __slr_reconcile_create(trans, txsv, snap, dir, entry);
 			break;
 		}
 
@@ -3678,31 +3678,31 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 	}
 
 	if (err < 0) {
-		BTRFS_SYM_DBG("RECONCILE > Error\n");
+		BTRFS_SLR_DBG("RECONCILE > Error\n");
 		return err;
 	}
 
-	BTRFS_SYM_PRINT("RECONCILING BLOCKS\n");
+	BTRFS_SLR_PRINT("RECONCILING BLOCKS\n");
 
-	for (node = rb_first(&symexec->blocks); node; node = rb_next(node)) {
-		lst_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+	for (node = rb_first(&slr->blocks); node; node = rb_next(node)) {
+		lst_entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
 
 		if (list_empty(&lst_entry->list)) {
-			BTRFS_SYM_DBG("BLOCKS > ino: %llu EMPTY\n", lst_entry->ino);
+			BTRFS_SLR_DBG("BLOCKS > ino: %llu EMPTY\n", lst_entry->ino);
 			continue;
 		}
 
-		err = __symexec_reconcile_blocks(symexec, txsv, snap, lst_entry);
+		err = __slr_reconcile_blocks(slr, txsv, snap, lst_entry);
 
 	}
 
 
 
 #if 0
-	BTRFS_SYM_PRINT("RECONCILING CREATIONS (Dir Tree)\n");
+	BTRFS_SLR_PRINT("RECONCILING CREATIONS (Dir Tree)\n");
 
-	for (node = rb_first(&symexec->dir); node; node = rb_next(node)) {
-		lst_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+	for (node = rb_first(&slr->dir); node; node = rb_next(node)) {
+		lst_entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
 
 		dir_ino = lst_entry->ino;
 		parent_key.objectid = dir_ino;
@@ -3711,7 +3711,7 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 		dir = btrfs_iget(fs_info->sb, &parent_key, snap->root, NULL);
 		if (IS_ERR_OR_NULL(dir)) {
-			BTRFS_SYM_DBG("INODE-GET > parent: %p\n", dir);
+			BTRFS_SLR_DBG("INODE-GET > parent: %p\n", dir);
 			return (IS_ERR(dir) ? PTR_ERR(dir) : -ENOENT);
 		}
 
@@ -3719,11 +3719,11 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 			if (entry->origin != ORIGIN_GLOBAL)
 				continue;
 
-			trans_num_items = __symexec_reconcile_trans_numitems(entry);
+			trans_num_items = __slr_reconcile_trans_numitems(entry);
 
 			trans = btrfs_start_transaction(snap->root, trans_num_items);
 			if (IS_ERR(trans)) {
-				BTRFS_SYM_DBG("START-TRANS > Error\n");
+				BTRFS_SLR_DBG("START-TRANS > Error\n");
 				err = PTR_ERR(trans);
 				break;
 			}
@@ -3731,36 +3731,36 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 			switch (entry->log_entry->type) {
 			case BTRFS_ACID_LOG_CREATE:
-				BTRFS_SYM_DBG("RECONCILE > CREATE p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > CREATE p: %llu, i: %llu\n",
 						dir->i_ino, entry->ino);
-				err = __symexec_reconcile_create(trans, txsv, snap, dir, entry);
+				err = __slr_reconcile_create(trans, txsv, snap, dir, entry);
 				break;
 			case BTRFS_ACID_LOG_LINK:
-				BTRFS_SYM_DBG("RECONCILE > LINK p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > LINK p: %llu, i: %llu\n",
 						dir->i_ino, entry->ino);
-				err = __symexec_reconcile_link(trans, txsv, snap, dir, entry);
+				err = __slr_reconcile_link(trans, txsv, snap, dir, entry);
 				break;
 			case BTRFS_ACID_LOG_MKDIR:
-				BTRFS_SYM_DBG("RECONCILE > MKDIR p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > MKDIR p: %llu, i: %llu\n",
 						dir->i_ino, entry->ino);
-				err = __symexec_reconcile_mkdir(trans,
+				err = __slr_reconcile_mkdir(trans,
 						txsv, snap, dir, entry);
 				break;
 			case BTRFS_ACID_LOG_MKNOD:
-				BTRFS_SYM_DBG("RECONCILE > MKNOD p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > MKNOD p: %llu, i: %llu\n",
 						dir->i_ino, entry->ino);
-				err = __symexec_reconcile_mknod(trans, txsv, snap, dir, entry);
+				err = __slr_reconcile_mknod(trans, txsv, snap, dir, entry);
 				break;
 			case BTRFS_ACID_LOG_RENAME:
-				BTRFS_SYM_DBG("RECONCILE > RENAME p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > RENAME p: %llu, i: %llu\n",
 						dir->i_ino, entry->ino);
-				err = __symexec_reconcile_rename(trans, symexec,
+				err = __slr_reconcile_rename(trans, slr,
 						txsv, snap, dir, entry);
 				break;
 			case BTRFS_ACID_LOG_SYMLINK:
-				BTRFS_SYM_DBG("RECONCILE > SYMLINK p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > SYMLINK p: %llu, i: %llu\n",
 						dir->i_ino, entry->ino);
-				err = __symexec_reconcile_create(trans, txsv, snap, dir, entry);
+				err = __slr_reconcile_create(trans, txsv, snap, dir, entry);
 				break;
 			}
 			trans_blocks_used = trans->blocks_used;
@@ -3770,16 +3770,16 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 		iput(dir);
 		if (err < 0) {
-			BTRFS_SYM_DBG("RECONCILE > Error\n");
+			BTRFS_SLR_DBG("RECONCILE > Error\n");
 			return err;
 		}
 	}
 
-	BTRFS_SYM_PRINT("RECONCILED CREATIONS (Dir Tree)\n");
+	BTRFS_SLR_PRINT("RECONCILED CREATIONS (Dir Tree)\n");
 
-	BTRFS_SYM_PRINT("RECONCILING REMOVALS (REM Tree)\n");
-	for (node = rb_first(&symexec->rem); node; node = rb_next(node)) {
-		lst_entry = rb_entry(node, struct symexec_list_tree_entry, rb_node);
+	BTRFS_SLR_PRINT("RECONCILING REMOVALS (REM Tree)\n");
+	for (node = rb_first(&slr->rem); node; node = rb_next(node)) {
+		lst_entry = rb_entry(node, struct slr_list_tree_entry, rb_node);
 
 		list_for_each_entry(entry, &lst_entry->list, list) {
 			if (entry->origin != ORIGIN_GLOBAL)
@@ -3792,16 +3792,16 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 			dir = btrfs_iget(fs_info->sb, &parent_key, snap->root, NULL);
 			if (IS_ERR_OR_NULL(dir)) {
-				BTRFS_SYM_DBG("INODE-GET > parent: %p\n", dir);
+				BTRFS_SLR_DBG("INODE-GET > parent: %p\n", dir);
 				return (IS_ERR(dir) ? PTR_ERR(dir) : -ENOENT);
 			}
 
 //			#if 0
-			trans_num_items = __symexec_reconcile_trans_numitems(entry);
+			trans_num_items = __slr_reconcile_trans_numitems(entry);
 
 			trans = btrfs_start_transaction(snap->root, trans_num_items);
 			if (IS_ERR(trans)) {
-				BTRFS_SYM_DBG("START-TRANS > Error\n");
+				BTRFS_SLR_DBG("START-TRANS > Error\n");
 				err = PTR_ERR(trans);
 				break;
 			}
@@ -3810,14 +3810,14 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 
 			switch (entry->log_entry->type) {
 			case BTRFS_ACID_LOG_UNLINK:
-				BTRFS_SYM_DBG("RECONCILE > UNLINK p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > UNLINK p: %llu, i: %llu\n",
 						dir->i_ino, entry->file->location.objectid);
-				err = __symexec_reconcile_unlink(trans, txsv, snap, dir, entry);
+				err = __slr_reconcile_unlink(trans, txsv, snap, dir, entry);
 				break;
 			case BTRFS_ACID_LOG_RMDIR:
-				BTRFS_SYM_DBG("RECONCILE > RMDIR p: %llu, i: %llu\n",
+				BTRFS_SLR_DBG("RECONCILE > RMDIR p: %llu, i: %llu\n",
 						dir->i_ino, entry->file->location.objectid);
-				err = __symexec_reconcile_rmdir(trans, txsv, snap, dir, entry);
+				err = __slr_reconcile_rmdir(trans, txsv, snap, dir, entry);
 				break;
 			}
 			trans_blocks_used = trans->blocks_used;
@@ -3828,18 +3828,18 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 		}
 
 		if (err < 0) {
-			BTRFS_SYM_DBG("RECONCILE > Error\n");
+			BTRFS_SLR_DBG("RECONCILE > Error\n");
 			return err;
 		}
 	}
 #endif
 
 
-	BTRFS_SYM_DBG("RECONCILE > Success!\n");
+	BTRFS_SLR_DBG("RECONCILE > Success!\n");
 
 #if 0
 	list_for_each_entry(inode, &fs_info->sb->s_inodes, i_sb_list) {
-		BTRFS_SYM_DBG("ACTIVE INODE > ino: %llu, location: %llu, root: %llu\n",
+		BTRFS_SLR_DBG("ACTIVE INODE > ino: %llu, location: %llu, root: %llu\n",
 				inode->i_ino, BTRFS_I(inode)->location.objectid,
 				BTRFS_I(inode)->root->root_key.objectid);
 	}
@@ -3851,7 +3851,7 @@ static int symexec_reconcile(struct symexec_ctl * symexec,
 int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap)
 {
-	struct symexec_ctl * symexec;
+	struct slr_ctl * slr;
 	struct btrfs_acid_snapshot_entry * entry;
 	int snap_gen, txsv_gen;
 	int err;
@@ -3859,20 +3859,20 @@ int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 	if (!txsv || !snap)
 		return -EINVAL;
 
-	symexec = symexec_create(snap);
-	if (IS_ERR(symexec)) {
-		BTRFS_SYM_DBG("RECONCILE > error creating symexec ctl\n");
-		return PTR_ERR(symexec);
+	slr = slr_create(snap);
+	if (IS_ERR(slr)) {
+		BTRFS_SLR_DBG("RECONCILE > error creating slr ctl\n");
+		return PTR_ERR(slr);
 	}
 
 	snap_gen = atomic_read(&snap->gen);
 	txsv_gen = atomic_read(&txsv->gen);
 
-	BTRFS_SYM_DBG("RECONCILE > GENERATIONS > snap: %d, txsv: %d\n",
+	BTRFS_SLR_DBG("RECONCILE > GENERATIONS > snap: %d, txsv: %d\n",
 			snap_gen, txsv_gen);
 
 	if (snap_gen == txsv_gen) {
-		BTRFS_SYM_DBG("RECONCILE > Snap's gen == TxSv's gen: all OKAY\n");
+		BTRFS_SLR_DBG("RECONCILE > Snap's gen == TxSv's gen: all OKAY\n");
 		goto out;
 	}
 
@@ -3884,38 +3884,38 @@ int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 		if (txsv_gen <= snap_gen)
 			continue;
 
-		err = symexec_apply(symexec, &entry->snap->op_log);
+		err = slr_apply(slr, &entry->snap->op_log);
 		if (err < 0) {
-			BTRFS_SYM_DBG("RECONCILE > error applying former txsv %.*s log\n",
+			BTRFS_SLR_DBG("RECONCILE > error applying former txsv %.*s log\n",
 					entry->snap->path.len, entry->snap->path.name);
-			symexec_destroy(symexec);
+			slr_destroy(slr);
 			return err;
 		}
 	}
 
 apply_txsv:
-	err = symexec_apply(symexec, &txsv->op_log);
+	err = slr_apply(slr, &txsv->op_log);
 	if (err < 0) {
-		BTRFS_SYM_DBG("RECONCILE > error applying txsv's log\n");
-		symexec_destroy(symexec);
+		BTRFS_SLR_DBG("RECONCILE > error applying txsv's log\n");
+		slr_destroy(slr);
 		return err;
 	}
 
-	err = symexec_validate(symexec, snap);
+	err = slr_validate(slr, snap);
 	if (err < 0) {
-		BTRFS_SYM_DBG("RECONCILE > error validating snapshot\n");
+		BTRFS_SLR_DBG("RECONCILE > error validating snapshot\n");
 		return err;
 	}
 
-	symexec_print_dir_tree(symexec);
-	symexec_print_rem_tree(symexec);
-	symexec_print_blocks_tree(symexec);
-	symexec_print_dirty_dirs_tree(symexec);
-	symexec_print_reconcile_log(symexec);
+	slr_print_dir_tree(slr);
+	slr_print_rem_tree(slr);
+	slr_print_blocks_tree(slr);
+	slr_print_dirty_dirs_tree(slr);
+	slr_print_reconcile_log(slr);
 
-	err = symexec_reconcile(symexec, txsv, snap);
+	err = slr_reconcile(slr, txsv, snap);
 
 out:
-//	symexec_destroy(symexec);
+//	slr_destroy(slr);
 	return 0;
 }
