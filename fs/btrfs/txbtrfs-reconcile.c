@@ -3185,171 +3185,13 @@ out_fail:
 	return err;
 }
 
-static struct page *
-__symexec_reconcile_get_page(struct inode * inode, pgoff_t index)
-{
-	struct page * page = NULL;
-	page = grab_cache_page(inode->i_mapping, index);
-	if (!page)
-		return NULL;
-
-	if (!PageUptodate(page)) {
-		btrfs_readpage(NULL, page);
-		lock_page(page);
-		if (!PageUptodate(page)) {
-			unlock_page(page);
-			page_cache_release(page);
-			return NULL;
-		}
-	}
-	wait_on_page_writeback(page);
-	return page;
-}
-
-#if 0
-static int __symexec_reconcile_interval(struct inode * inode_from,
-		struct inode * inode_to, pgoff_t first, pgoff_t last)
-{
-	struct btrfs_root * inode_to_root;
-	u64 space_to_reserve;
-	int nr_pages;
-	struct page ** inode_from_pages, ** inode_to_pages;
-	void * from_addr, * to_addr;
-	u64 start_pos, num_bytes, end_of_last_block;
-	u32 sectorsize;
-	pgoff_t index;
-	int ret = 0;
-	int i;
-	unsigned long int dirty_pages_cnt = 0;
-
-	loff_t inode_to_isize, inode_from_isize;
-
-	if (!inode_from || !inode_to)
-		return -EINVAL;
-
-	inode_to_root = BTRFS_I(inode_to)->root;
-
-	ret = -ENOMEM;
-	nr_pages = last - first + 1;
-	inode_from_pages = kzalloc(sizeof(struct page *) * nr_pages, GFP_NOFS);
-	if (!inode_from_pages)
-		goto out;
-
-	inode_to_pages = kzalloc(sizeof(struct page *) * nr_pages, GFP_NOFS);
-	if (!inode_to_pages)
-		goto free_txsv_pages;
-
-	space_to_reserve = nr_pages << PAGE_CACHE_SHIFT;
-	ret = btrfs_delalloc_reserve_space(inode_to, space_to_reserve);
-	if (ret) {
-		BTRFS_SUB_DBG(TX_RECONCILIATE, "Unable to reserve space !!\n");
-		goto free_snap_pages;
-	}
-
-	inode_to_isize = i_size_read(inode_to);
-	inode_from_isize = i_size_read(inode_from);
-
-	for (index = first, i = 0; i < nr_pages; i ++, index ++) {
-		inode_from_pages[i] = __symexec_reconcile_get_page(inode_from, index);
-		if (!inode_from_pages[i]) {
-			BTRFS_SUB_DBG(TX_RECONCILIATE,
-					"\tInvalid txsv page index (%lu) or something\n", index);
-			ret = -ENOMEM;
-			break;
-		}
-
-		inode_to_pages[i] = __symexec_reconcile_get_page(inode_to, index);
-		if (!inode_to_pages[i]) {
-			BTRFS_SUB_DBG(TX_RECONCILIATE,
-					"\tInvalid snap page index (%lu) or something\n", index);
-//			unlock_page(txsv_page);
-//			page_cache_release(txsv_page);
-			ret = -ENOMEM;
-			break;
-		}
-
-		from_addr = kmap(inode_from_pages[i]);
-		to_addr = kmap(inode_to_pages[i]);
-		memcpy(to_addr, from_addr, PAGE_CACHE_SIZE);
-		kunmap(inode_from_pages[i]);
-		kunmap(inode_to_pages[i]);
-	}
-
-	for (i = 0; i < nr_pages; i ++) {
-		if (!inode_from_pages[i])
-			continue;
-
-//		kunmap(txsv_pages[index]);
-		unlock_page(inode_from_pages[i]);
-		page_cache_release(inode_from_pages[i]);
-		inode_from_pages[i] = NULL;
-	}
-
-	if (ret < 0)
-		goto err_pages;
-
-//		kunmap(txsv_page);
-//		unlock_page(txsv_page); /* this should be in a '__put_page()' */
-//		page_cache_release(txsv_page);
-
-//		start_pos = ((index << PAGE_CACHE_SHIFT) & ~(sectorsize - 1));
-	start_pos = ((first << PAGE_CACHE_SHIFT)
-			& ~(inode_to_root ->sectorsize - 1));
-	num_bytes = space_to_reserve;
-	end_of_last_block = (start_pos + num_bytes - 1);
-	ret = btrfs_set_extent_delalloc(inode_to, start_pos,
-			end_of_last_block, NULL);
-	BUG_ON(ret);
-
-err_pages:
-	for (i = 0; i < nr_pages; i ++) {
-		if (!inode_to_pages[i])
-			continue;
-
-		SetPageUptodate(inode_to_pages[i]);
-		ClearPageChecked(inode_to_pages[i]);
-		set_page_dirty(inode_to_pages[i]);
-
-		unlock_page(inode_to_pages[i]);
-		mark_page_accessed(inode_to_pages[i]);
-		page_cache_release(inode_to_pages[i]);
-
-		dirty_pages_cnt ++;
-	}
-
-	if (ret < 0) {
-		btrfs_delalloc_release_space(inode_to, space_to_reserve);
-		goto free_snap_pages;
-	}
-	balance_dirty_pages_ratelimited_nr(inode_to->i_mapping, dirty_pages_cnt);
-	btrfs_throttle(inode_to_root);
-	BTRFS_I(inode_to)->last_trans = inode_to_root->fs_info->generation + 1;
-	btrfs_wait_ordered_range(inode_to, start_pos, space_to_reserve);
-
-	if (inode_to_isize < inode_from_isize) {
-		if (inode_to_isize < end_of_last_block) {
-//			u64 remainder = (4096 - (end_of_last_block - inode_from->i_size));
-			i_size_write(inode_to, inode_from_isize);
-			btrfs_ordered_update_i_size(inode_to, inode_to->i_size, NULL);
-		}
-	}
-
-free_snap_pages:
-	kfree(inode_to_pages);
-free_txsv_pages:
-	kfree(inode_from_pages);
-
-out:
-	return ret;
-}
-#else
 static int __symexec_reconcile_interval(struct inode * inode_from,
 		struct inode * inode_to, pgoff_t first, pgoff_t last)
 {
 	struct btrfs_root * inode_to_root, * inode_from_root;
 	u64 space_to_reserve;
 	int nr_pages;
-	struct page ** inode_from_pages, ** inode_to_pages;
+	struct page ** inode_to_pages;
 	struct page * page;
 
 	void * from_addr, * to_addr;
@@ -3360,10 +3202,10 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 	int i;
 	unsigned long int dirty_pages_cnt = 0;
 	struct btrfs_trans_handle * trans = NULL;
-
-	char from_tmp_str[20], to_tmp_str[20];
-
 	loff_t inode_to_isize, inode_from_isize;
+
+//	char from_tmp_str[20], to_tmp_str[20];
+
 
 	if (!inode_from || !inode_to)
 		return -EINVAL;
@@ -3374,13 +3216,9 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 	ret = -ENOMEM;
 	nr_pages = last - first + 1;
 
-	inode_from_pages = kzalloc(sizeof(struct page *) * nr_pages, GFP_NOFS);
-	if (!inode_from_pages)
-		goto out;
-
 	inode_to_pages = kzalloc(sizeof(struct page *) * nr_pages, GFP_NOFS);
 	if (!inode_to_pages)
-		goto free_txsv_pages;
+		goto out;
 
 	current->backing_dev_info = inode_to->i_mapping->backing_dev_info;
 
@@ -3408,18 +3246,11 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 			end_of_last_block,
 			((u64) (start_pos >> PAGE_CACHE_SHIFT) + nr_pages) << PAGE_CACHE_SHIFT);
 
-//	ret = btrfs_file_write_prepare_pages(inode_from_root, inode_from,
-//				inode_from_pages, nr_pages, start_pos, first, last, num_bytes);
-//	if (ret) {
-//		btrfs_delalloc_release_space(inode_to, space_to_reserve);
-//		goto free_snap_pages;
-//	}
-
 	ret = btrfs_file_write_prepare_pages(inode_to_root, inode_to,
 				inode_to_pages, nr_pages, start_pos, first, last, num_bytes);
 	if (ret) {
 		btrfs_delalloc_release_space(inode_to, space_to_reserve);
-//		goto release_inode_from_pages;
+		goto free_snap_pages;
 	}
 
 	BTRFS_SYM_DBG(
@@ -3427,34 +3258,6 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 			nr_pages, first, last, space_to_reserve);
 
 	for (index = first, i = 0; i < nr_pages; i ++, index ++) {
-//		inode_from_pages[i] = __symexec_reconcile_get_page(inode_from, index);
-//		if (!inode_from_pages[i]) {
-//			BTRFS_SUB_DBG(TX_RECONCILIATE,
-//					"\tInvalid txsv page index (%lu) or something\n", index);
-//			ret = -ENOMEM;
-//			break;
-//		}
-//
-//		inode_to_pages[i] = __symexec_reconcile_get_page(inode_to, index);
-//		if (!inode_to_pages[i]) {
-//			BTRFS_SUB_DBG(TX_RECONCILIATE,
-//					"\tInvalid snap page index (%lu) or something\n", index);
-//			ret = -ENOMEM;
-//			break;
-//		}
-
-		/*
-		page = find_get_page(inode_from->i_mapping, index);
-		if (!page) {
-			BTRFS_SYM_DBG("PAGE %d not on cache. Reading it from disk.\n", i);
-			page = page_cache_alloc_cold(inode_from->i_mapping);
-			page->index = index;
-			ret = add_to_page_cache_lru(page, inode_from->i_mapping,
-					index, GFP_KERNEL);
-			WARN_ON(ret);
-			ret = btrfs_readpage(NULL, page);
-			WARN_ON(ret);
-		} */
 
 		page = grab_cache_page(inode_from->i_mapping, index);
 		if (!PageUptodate(page)) {
@@ -3465,26 +3268,31 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 			unlock_page(page);
 		}
 
-
+#if 0
 		BTRFS_SYM_DBG("PAGE %d CONTENTS:\n", index);
+#endif
 
 //		pagefault_disable();
 //		from_addr = kmap(inode_from_pages[i]);
 		from_addr = kmap(page);
 
+#if 0
 		memset(from_tmp_str, 0, 20);
 		memcpy(from_tmp_str, from_addr, 19);
 		BTRFS_SYM_DBG("        From (initial): %s\n", from_tmp_str);
+#endif
 
 		to_addr = kmap(inode_to_pages[i]);
 		memcpy(to_addr, from_addr, PAGE_CACHE_SIZE);
 //		pagefault_enable();
 
+#if 0
 		memset(from_tmp_str, 0, 20);
 		memcpy(from_tmp_str, from_addr, 19);
 
 		memset(to_tmp_str, 0, 20);
 		memcpy(to_tmp_str, to_addr, 19);
+#endif
 
 //		kunmap(inode_from_pages[i]);
 		kunmap(page);
@@ -3495,24 +3303,11 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 
 		page_cache_release(page);
 
-
-
+#if 0
 		BTRFS_SYM_DBG("        From (final): %s\n", from_tmp_str);
 		BTRFS_SYM_DBG("        To (final): %s\n", to_tmp_str);
+#endif
 	}
-
-//release_inode_from_pages:
-//	for (i = 0; i < nr_pages; i ++) {
-//		if (!inode_from_pages[i])
-//			continue;
-//
-//		unlock_page(inode_from_pages[i]);
-//		page_cache_release(inode_from_pages[i]);
-//		inode_from_pages[i] = NULL;
-//	}
-
-//	if (ret)
-//		goto free_snap_pages;
 
 	ret = btrfs_set_extent_delalloc(inode_to, start_pos, end_of_last_block,
 			NULL);
@@ -3533,13 +3328,6 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 
 	btrfs_drop_pages(inode_to_pages, nr_pages);
 
-	/*
-	balance_dirty_pages_ratelimited_nr(inode_to->i_mapping,	dirty_pages_cnt);
-	if (dirty_pages_cnt < (inode_to_root->leafsize >> PAGE_CACHE_SHIFT) + 1)
-		btrfs_btree_balance_dirty(inode_to_root, 1);
-	btrfs_throttle(inode_to_root);
-	*/
-
 	filemap_fdatawrite_range(inode_to->i_mapping, start_pos, end_of_last_block);
 
 	BTRFS_I(inode_to)->last_trans = inode_to_root->fs_info->generation + 1;
@@ -3553,14 +3341,9 @@ static int __symexec_reconcile_interval(struct inode * inode_from,
 
 free_snap_pages:
 	kfree(inode_to_pages);
-free_txsv_pages:
-	kfree(inode_from_pages);
-
 out:
 	return ret;
 }
-
-#endif
 
 static int __symexec_reconcile_blocks(struct symexec_ctl * symexec,
 		struct btrfs_acid_snapshot * txsv, struct btrfs_acid_snapshot * snap,
