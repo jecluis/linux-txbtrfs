@@ -158,6 +158,19 @@ static noinline int dirty_and_release_pages(struct btrfs_trans_handle *trans,
 	return 0;
 }
 
+noinline int
+btrfs_file_dirty_and_release_pages(struct btrfs_trans_handle *trans,
+				   struct btrfs_root *root,
+				   struct inode * inode,
+				   struct page **pages,
+				   size_t num_pages,
+				   loff_t pos,
+				   size_t write_bytes)
+{
+	return dirty_and_release_pages(trans, root, inode, pages,
+			num_pages, pos, write_bytes);
+}
+
 /*
  * this drops all the extents in the cache that intersect the range
  * [start, end].  Existing extents are split as required.
@@ -843,6 +856,17 @@ again:
 	return 0;
 }
 
+noinline int
+btrfs_file_write_prepare_pages(struct btrfs_root *root, struct inode * inode,
+			 struct page **pages, size_t num_pages,
+			 loff_t pos, unsigned long first_index,
+			 unsigned long last_index, size_t write_bytes)
+{
+	return prepare_pages(root, inode, pages, num_pages, pos,
+			first_index, last_index, write_bytes);
+}
+
+
 ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 				    const struct iovec *iov,
 				    unsigned long nr_segs, loff_t pos)
@@ -1132,7 +1156,6 @@ done:
 
 int btrfs_release_file(struct inode *inode, struct file *filp)
 {
-	BTRFS_SUB_DBG(CALL, "");
 	/*
 	 * ordered_data_close is set by settattr when we are about to truncate
 	 * a file from a non-zero size to a zero size.  This tries to

@@ -901,10 +901,10 @@ __cleanup_acid_subvol_inconsistencies(struct btrfs_root * tree_root)
 				txsv_entry->key.objectid, txsv_entry->key.type,
 				txsv_entry->key.offset);
 		if (!txsv) {
-			BTRFS_SUB_DBG(TX, "\t\tNULL ROOT\n");
+			BTRFS_SUB_DBG(TX, "  NULL ROOT\n");
 			BUG();
 		} else
-			BTRFS_SUB_DBG(TX, "\t\tkey [%llu %d %llu]\n",
+			BTRFS_SUB_DBG(TX, "  key [%llu %d %llu]\n",
 					txsv->root->root_key.objectid, txsv->root->root_key.type,
 					txsv->root->root_key.offset);
 
@@ -1271,6 +1271,15 @@ int btrfs_acid_allow(struct inode * inode)
 	if (!our->root->snap)
 		return -EINVAL;
 
+	if (our->root->snap->owner_pid == 0) {
+		down_read(&our->root->fs_info->acid_ctl.sv_sem);
+		snap = our->root->fs_info->acid_ctl.sv;
+		up_read(&our->root->fs_info->acid_ctl.sv_sem);
+
+		if (our->root->snap != snap)
+			return 0; // we are accessing an historic txsv
+	}
+
 	snap = btrfs_acid_find_valid_ancestor(&our->root->fs_info->acid_ctl,
 			curr_task, NULL);
 	if (!snap)
@@ -1359,7 +1368,7 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	if (!ctl)
 		return ERR_PTR(-EINVAL);
 
-	BTRFS_SUB_DBG(TX, "Checking PID = %d\n", current->pid);
+	BTRFS_SUB_DBG(TX_CHECKS, "Checking PID = %d\n", current->pid);
 
 	/*down_read(&ctl->curr_snaps_sem);
 	task = get_current();
@@ -1374,18 +1383,19 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	}
 	up_read(&ctl->curr_snaps_sem);*/
 	snap = btrfs_acid_find_valid_ancestor(ctl, get_current(), &found_pid);
-	BTRFS_SUB_DBG(TX, "\tsnap = %p, found_pid = %d\n", snap, found_pid);
+	BTRFS_SUB_DBG(TX_CHECKS, "\tsnap = %p, found_pid = %d\n", snap, found_pid);
 
 	if (!snap)
 		return NULL;
 
-	BTRFS_SUB_DBG(TX, "\tAcquiring semaphores for PID = %d\n",
+	BTRFS_SUB_DBG(TX_CHECKS, "\tAcquiring semaphores for PID = %d\n",
 			get_current()->pid);
 	down_write(&ctl->curr_snaps_sem);
 	down_write(&snap->known_pids_sem);
 	task = get_current();
 	while (!is_global_init(task) && (task->pid != found_pid)) {
-		BTRFS_SUB_DBG(TX, "\tInserting snapshot for PID = %d\n", task->pid);
+		BTRFS_SUB_DBG(TX_CHECKS, "\tInserting snapshot for PID = %d\n",
+				task->pid);
 		radix_tree_insert(&ctl->current_snapshots, task->pid, (void *) snap);
 
 		pid_entry = kzalloc(sizeof(*pid_entry), GFP_NOFS);
@@ -1399,7 +1409,7 @@ __check_transactional_process(struct btrfs_acid_ctl * ctl)
 	}
 	up_write(&snap->known_pids_sem);
 	up_write(&ctl->curr_snaps_sem);
-	BTRFS_SUB_DBG(TX, "\tReleasing semaphores for PID = %d\n",
+	BTRFS_SUB_DBG(TX_CHECKS, "\tReleasing semaphores for PID = %d\n",
 			get_current()->pid);
 
 	return snap;
@@ -2469,7 +2479,7 @@ static struct page * __get_page(struct inode * inode, pgoff_t index)
 int btrfs_acid_tx_commit(struct file * file)
 {
 	int ret = 0;
-	struct dentry * sv_dentry;
+	struct dentry * file_dentry;
 	struct btrfs_root * root;
 	struct btrfs_acid_snapshot * snap = NULL;
 	struct btrfs_acid_ctl * ctl;
@@ -2487,10 +2497,10 @@ int btrfs_acid_tx_commit(struct file * file)
 		return -EINVAL;
 	}
 
-	sv_dentry = dget(fdentry(file));
-	root = BTRFS_I(sv_dentry->d_inode)->root;
+	file_dentry = dget(fdentry(file));
+	root = BTRFS_I(file_dentry->d_inode)->root;
 
-	parent_dentry = dget(sv_dentry->d_parent);
+	parent_dentry = dget(file_dentry->d_parent);
 	parent_inode = parent_dentry->d_inode;
 
 	/* If we are to commit, we must be working inside our own snapshot.
@@ -2568,17 +2578,17 @@ int btrfs_acid_tx_commit(struct file * file)
 	 * must guarantee its chances of needing to revalidate are slim or
 	 * inexistent at all.
 	 */
-	ret = btrfs_acid_commit_snapshot(snap, parent_inode, sv_dentry->d_inode);
+	ret = btrfs_acid_commit_snapshot(snap, parent_inode, file_dentry->d_inode);
 	if (ret < 0)
 		BTRFS_SUB_DBG(TX_COMMIT, "Error committing snapshot\n");
 
 out_unlock:
 	mutex_unlock(&ctl->commit_mutex);
 out:
-	dput(sv_dentry);
+	dput(file_dentry);
 	dput(parent_dentry);
 
-	d_drop(sv_dentry);
+	d_drop(file_dentry);
 	d_drop(parent_dentry);
 
 	return ret;

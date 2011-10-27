@@ -64,10 +64,11 @@ struct btrfs_acid_snapshot_entry
 
 #ifdef __TXBTRFS_DEBUG__
 
-#define __TXBTRFS_DEBUG_TX__
+//#define __TXBTRFS_DEBUG_TX__
+//#define __TXBTRFS_DEBUG_TX_CHECKS__
 //#define __TXBTRFS_DEBUG_CALL__
 //#define __TXBTRFS_DEBUG_FS__
-//#define __TXBTRFS_DEBUG_LOG__
+#define __TXBTRFS_DEBUG_LOG__
 //#define __TXBTRFS_DEBUG_ACCESS__
 
 #define __TXBTRFS_DEBUG_TX_COMMIT__
@@ -102,6 +103,13 @@ struct btrfs_acid_snapshot_entry
 #define BTRFS_TX_INFO(fmt, args...) do {} while (0)
 #define BTRFS_TX_DBG(prefix, fmt, args...) do {} while (0)
 #endif /* __TXBTRFS_DEBUG_TX__ */
+
+#ifdef __TXBTRFS_DEBUG_TX_CHECKS__
+#define BTRFS_TX_CHECKS_DBG(prefix, fmt, args...)\
+	printk(KERN_DEBUG "<TX-CHECKS> (%s): " fmt, prefix, ## args)
+#else
+#define BTRFS_TX_CHECKS_DBG(prefix, fmt, args...) do {} while (0)
+#endif
 
 #ifdef __TXBTRFS_DEBUG_CALL__
 #define BTRFS_CALL_DBG(prefix, fmt, args...) \

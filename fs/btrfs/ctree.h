@@ -2707,6 +2707,19 @@ ssize_t btrfs_file_aio_write(struct kiocb *iocb,
 				    const struct iovec *iov,
 				    unsigned long nr_segs, loff_t pos);
 int btrfs_file_mmap(struct file	*filp, struct vm_area_struct *vma);
+noinline int
+btrfs_file_write_prepare_pages(struct btrfs_root *root, struct inode * inode,
+			 struct page **pages, size_t num_pages,
+			 loff_t pos, unsigned long first_index,
+			 unsigned long last_index, size_t write_bytes);
+noinline int
+btrfs_file_dirty_and_release_pages(struct btrfs_trans_handle *trans,
+				   struct btrfs_root *root,
+				   struct inode * inode,
+				   struct page **pages,
+				   size_t num_pages,
+				   loff_t pos,
+				   size_t write_bytes);
 
 /* tree-defrag.c */
 int btrfs_defrag_leaves(struct btrfs_trans_handle *trans,
