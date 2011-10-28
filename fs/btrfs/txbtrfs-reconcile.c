@@ -348,7 +348,7 @@ __list_tree_lookup_file(struct rb_root * root, u64 key, u64 ino,
 }
 
 /**
- * slr_ -- put something into an inode map.
+ * slr_ino_map_put -- put something into an inode map.
  * @returns: 0 if successful; < 0 otherwise.
  */
 static int slr_ino_map_put(struct slr_ctl * slr, u64 key, u64 val)
@@ -672,7 +672,7 @@ static int slr_dir_remove(struct slr_ctl * slr, u64 parent,
 }
 
 /**
- * slr_dir_match_file - Checks if any file in the symbolic execution tree
+ * slr_dir_match_file - Checks if any file in the symbolic log replay tree
  * matches @file.
  *
  * @return: 0 if no match was found, 1 if a match was found, or < 0 on error.
@@ -829,22 +829,22 @@ static int slr_reconcile_log_put(struct slr_ctl * slr,
 		u64 ino, struct btrfs_acid_log_file * file,
 		struct btrfs_acid_log_entry * entry)
 {
-	struct slr_entry * sym_entry;
+	struct slr_entry * slr_entry;
 
 	if (!slr || !file || !entry)
 		return -EINVAL;
 
-	sym_entry = __slr_create_entry(ino, file, entry, ORIGIN_GLOBAL);
-	if (IS_ERR(sym_entry))
-		return PTR_ERR(sym_entry);
+	slr_entry = __slr_create_entry(ino, file, entry, ORIGIN_GLOBAL);
+	if (IS_ERR(slr_entry))
+		return PTR_ERR(slr_entry);
 
-	list_add_tail(&sym_entry->reconcile_list, &slr->reconcile_log);
+	list_add_tail(&slr_entry->reconcile_list, &slr->reconcile_log);
 
 	return 0;
 }
 
 /**
- * slr_create -- creates & initializes a symbolic execution.
+ * slr_create -- creates & initializes a symbolic log replay.
  */
 static struct slr_ctl * slr_create(struct btrfs_acid_snapshot * snap)
 {
@@ -913,6 +913,18 @@ static void __slr_destroy_tree_dirty_dirs(struct slr_ctl * slr)
 	}
 }
 
+static void __slr_destroy_reconcile_list(struct list_head * list)
+{
+	struct slr_entry * entry;
+	struct list_head * lst, * ptr;
+
+	list_for_each_safe(lst, ptr, list) {
+		entry = list_entry(lst, struct slr_entry, reconcile_list);
+		list_del(lst);
+		kfree(entry);
+	}
+}
+
 static void __slr_destroy_list(struct list_head * list)
 {
 	struct slr_entry * entry;
@@ -947,15 +959,18 @@ static void slr_destroy(struct slr_ctl * slr)
 	if (!slr)
 		return;
 
+	BTRFS_SLR_DBG("Destroying SLR\n");
+
 	__slr_destroy_tree_nlinks(slr);
 	__slr_destroy_tree_ino(slr);
 	__slr_destroy_tree_dirty_dirs(slr);
-
+#if 1
 	__slr_destroy_list_tree(&slr->blocks);
 	__slr_destroy_list_tree(&slr->dir);
 	__slr_destroy_list_tree(&slr->rem);
 
-	__slr_destroy_list(&slr->reconcile_log);
+	__slr_destroy_reconcile_list(&slr->reconcile_log);
+#endif
 }
 
 static void __print_dir_list(struct slr_ctl * slr,
@@ -1599,7 +1614,7 @@ static int __slr_apply_write(struct slr_ctl * slr,
 	}
 
 	/* there is no valid mapping for ino; i.e., it was not created/linked
-	 * during the symbolic execution. */
+	 * during the symbolic log replay. */
 	if (!err) {
 		err = slr_nlinks_put(slr, entry->ino, entry->nlink);
 		if (err < 0) {
@@ -1628,10 +1643,10 @@ static int __slr_apply_write(struct slr_ctl * slr,
 }
 
 /**
- * slr_apply - Apply an operation log to our symbolic execution tree.
+ * slr_apply - Apply an operation log to our symbolic log replay tree.
  *
  * Basically, this method should be used to apply the operations from the
- * master copy into our symbolic execution tree. These operations will be
+ * master copy into our symbolic log replay tree. These operations will be
  * applied following constraints required only by the master copy's logs, which
  * are different from those required by the snapshot's operations. Therefore,
  * we must use another method to apply the snapshot's operations.
@@ -2274,8 +2289,8 @@ out_okay:
 }
 
 /**
- * slr_validate - Validates a snapshot's operation log against a
- * symbolic execution.
+ * slr_validate - Validates a snapshot's operation log
+ * against a symbolic log replay.
  *
  */
 static int slr_validate(struct slr_ctl * slr,
@@ -3854,7 +3869,7 @@ int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 	struct slr_ctl * slr;
 	struct btrfs_acid_snapshot_entry * entry;
 	int snap_gen, txsv_gen;
-	int err;
+	int err = 0;
 
 	if (!txsv || !snap)
 		return -EINVAL;
@@ -3888,8 +3903,9 @@ int btrfs_acid_reconcile(struct btrfs_acid_ctl * ctl,
 		if (err < 0) {
 			BTRFS_SLR_DBG("RECONCILE > error applying former txsv %.*s log\n",
 					entry->snap->path.len, entry->snap->path.name);
-			slr_destroy(slr);
-			return err;
+//			slr_destroy(slr);
+//			return err;
+			goto out;
 		}
 	}
 
@@ -3897,14 +3913,13 @@ apply_txsv:
 	err = slr_apply(slr, &txsv->op_log);
 	if (err < 0) {
 		BTRFS_SLR_DBG("RECONCILE > error applying txsv's log\n");
-		slr_destroy(slr);
-		return err;
+		goto out;
 	}
 
 	err = slr_validate(slr, snap);
 	if (err < 0) {
 		BTRFS_SLR_DBG("RECONCILE > error validating snapshot\n");
-		return err;
+		goto out;
 	}
 
 	slr_print_dir_tree(slr);
@@ -3916,6 +3931,6 @@ apply_txsv:
 	err = slr_reconcile(slr, txsv, snap);
 
 out:
-//	slr_destroy(slr);
-	return 0;
+	slr_destroy(slr);
+	return err;
 }
