@@ -52,6 +52,12 @@ slr_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
 	printk(KERN_DEBUG "<SLR-EXEC> " fmt, ## args)
 #define BTRFS_SLR_DBG_FILE(file_ptr) \
 	slr_print_dbg_file(__FUNCTION__, file_ptr)
+
+//#define BTRFS_SLR_CONFLICT(op, fmt, args...) \
+//	printk(KERN_DEBUG "<SLR-CONFLICT> <" op "> " fmt, ## args)
+#define BTRFS_SLR_CONFLICT(op) \
+	printk(KERN_DEBUG "<SLR-CONFLICT> " op);
+
 #else
 #define BTRFS_SLR_DBG(fmt, args...) do {} while (0)
 #define BTRFS_SLR_PRINT(fmt, args...) do {} while (0)
@@ -1730,6 +1736,15 @@ static int __slr_validate_create(struct slr_ctl * slr,
 				entry->file.name.len, entry->file.name.name,
 				dir_entry->file->name.len, dir_entry->file->name.name,
 				parent);
+
+		BTRFS_SLR_CONFLICT("CREATE");
+//
+//		BTRFS_SLR_CONFLICT("CREATE",
+//				"local: %.*s ; global: %.*s ; parent: %llu\n",
+//				entry->file.name.len, entry->file.name.name,
+//				dir_entry->file->name.len, dir_entry->file->name.name,
+//				parent);
+
 		return SLR_CONFLICT;
 	}
 
@@ -1781,6 +1796,11 @@ static int __slr_validate_unlink_do(struct slr_ctl * slr,
 				"on parent %llu\n",
 				name->len, name->name,
 				(origin == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"),	parent);
+
+		BTRFS_SLR_CONFLICT("UNLINK");
+//		BTRFS_SLR_CONFLICT("UNLINK",
+//				"local: %.*s ; parent: %llu\n", name->len, name->name, parent);
+
 		return SLR_CONFLICT;
 	}
 
@@ -1878,6 +1898,10 @@ static int __slr_validate_link_do(struct slr_ctl * slr,
 				"on parent %llu: link's old file previously removed.\n",
 				old_name->len, old_name->name,
 				(orig == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), old_parent);
+
+		BTRFS_SLR_CONFLICT("LINK");
+//		BTRFS_SLR_CONFLICT("LINK", "local: %.*s ; parent: %llu\n",
+//				old_name->len, old_name->name, old_parent);
 		return SLR_CONFLICT;
 	}
 
@@ -1891,6 +1915,7 @@ static int __slr_validate_link_do(struct slr_ctl * slr,
 				"on parent %llu: link's new file previously created.\n",
 				new_name->len, new_name->name,
 				(orig == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), old_parent);
+		BTRFS_SLR_CONFLICT("LINK");
 		return SLR_CONFLICT;
 	}
 
@@ -2028,6 +2053,7 @@ static int __slr_validate_readdir(struct slr_ctl * slr,
 		BTRFS_SLR_DBG("CONFLICT ON %.*s (local ino: %llu): "
 				"directory previously changed.\n",
 				name->len, name->name, ino);
+		BTRFS_SLR_CONFLICT("READDIR");
 		return SLR_CONFLICT;
 	}
 
@@ -2040,6 +2066,7 @@ static int __slr_validate_readdir(struct slr_ctl * slr,
 		BTRFS_SLR_DBG("CONFLICT ON %.*s (local ino: %llu): "
 				"directory previously removed.\n",
 				name->len, name->name, ino);
+		BTRFS_SLR_CONFLICT("READDIR");
 		return SLR_CONFLICT; // this should be taken with a grain of salt.
 	}
 
@@ -2074,6 +2101,7 @@ static int __slr_validate_truncate(struct slr_ctl * slr,
 				"on parent %llu: file to truncate previously removed.\n",
 				name->len, name->name,
 				(orig == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), parent);
+		BTRFS_SLR_CONFLICT("TRUNCATE");
 		return SLR_CONFLICT;
 	}
 
@@ -2163,6 +2191,7 @@ static int __slr_validate_write(struct slr_ctl * slr,
 				"on parent %llu: file to write previously removed.\n",
 				name->len, name->name,
 				(origin == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), parent);
+		BTRFS_SLR_CONFLICT("WRITE");
 		return SLR_CONFLICT;
 	}
 
@@ -2227,6 +2256,7 @@ static int __slr_validate_read(struct slr_ctl * slr,
 				"on parent %llu: file to read previously removed.\n",
 				name->len, name->name,
 				(origin == ORIGIN_GLOBAL ? "GLOBAL" : "LOCAL"), parent);
+		BTRFS_SLR_CONFLICT("READ");
 		return SLR_CONFLICT;
 	}
 
@@ -2258,6 +2288,7 @@ static int __slr_validate_read(struct slr_ctl * slr,
 								"GLOBAL" : "LOCAL"), parent,
 						entry->first_page, entry->last_page,
 						trunc_entry->from);
+				BTRFS_SLR_CONFLICT("READ");
 				return SLR_CONFLICT;
 			}
 			continue;
@@ -2280,6 +2311,7 @@ static int __slr_validate_read(struct slr_ctl * slr,
 					parent,
 					entry->first_page, entry->last_page,
 					rw_entry->first_page, rw_entry->last_page);
+			BTRFS_SLR_CONFLICT("READ");
 			return SLR_CONFLICT;
 		}
 	}
