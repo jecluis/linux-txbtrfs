@@ -2480,7 +2480,7 @@ static struct page * __get_page(struct inode * inode, pgoff_t index)
  */
 int btrfs_acid_tx_commit(struct file * file)
 {
-	int ret = 0;
+	int ret = 0, err = 0;
 	struct dentry * file_dentry;
 	struct btrfs_root * root;
 	struct btrfs_acid_snapshot * snap = NULL;
@@ -2601,15 +2601,15 @@ err_cleanup:
 	BTRFS_SUB_DBG(TX_COMMIT, "Cleaning up Snapshot '%.*s' (pid = %d)\n",
 			snap->path.len, snap->path.name, get_current()->pid);
 	BTRFS_SUB_DBG(TX_COMMIT, "  Destroying on-disk snapshot\n");
-	ret = btrfs_acid_destroy_snapshot(snap, fs_info);
-	if (ret < 0) {
+	err = btrfs_acid_destroy_snapshot(snap, fs_info);
+	if (err < 0) {
 		BTRFS_SUB_DBG(TX_COMMIT, "Error destroying on-disk snapshot\n");
 		goto out_unlock;
 	}
 
 	BTRFS_SUB_DBG(TX_COMMIT, "  Destroying in-memory snapshot\n");
-	ret = __snapshot_destroy(snap);
-	if (ret < 0) {
+	err = __snapshot_destroy(snap);
+	if (err < 0) {
 		BTRFS_SUB_DBG(TX_COMMIT, "Error destroying in-memory snapshot\n");
 	}
 #endif
