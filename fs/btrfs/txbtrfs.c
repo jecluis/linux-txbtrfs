@@ -76,6 +76,7 @@ static int __txsv_set_root_flags(struct btrfs_trans_handle * trans,
 static int btrfs_has_acid_ancestor(struct btrfs_acid_ctl * ctl,
 		struct task_struct * task);
 
+#if 0
 static int __transaction_validate(struct btrfs_acid_snapshot * snap,
 		struct btrfs_fs_info * fs_info);
 static int __transaction_validate_rw(struct btrfs_acid_snapshot * snap,
@@ -88,6 +89,7 @@ static int __transaction_reconciliate(struct btrfs_acid_snapshot * snap,
 static int __transaction_reconciliate_rw(struct btrfs_acid_snapshot * snap,
 		struct btrfs_acid_snapshot * txsv);
 static struct page * __get_page(struct inode * inode, pgoff_t index);
+#endif
 
 /* Copy the contents of 'src' and return them in newly allocated memory.
  *
@@ -2594,7 +2596,7 @@ out:
 	return ret;
 
 err_cleanup:
-#if 0
+#if 1
 	/* cleanup snapshots */
 	BTRFS_SUB_DBG(TX_COMMIT, "Cleaning up Snapshot '%.*s' (pid = %d)\n",
 			snap->path.len, snap->path.name, get_current()->pid);
