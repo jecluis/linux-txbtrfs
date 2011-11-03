@@ -2640,7 +2640,14 @@ static int __slr_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 
 	err = btrfs_unlink_inode(trans, snap->root, dir, inode,
 			name->name, name->len);
-	BUG_ON(err);
+//	BUG_ON(err);
+	if (err) {
+		BTRFS_SLR_DBG("UNLINK-DO > Error unlinking i: %llu p: %llu\n",
+				ino, dir->i_ino);
+
+		err = SLR_CONFLICT;
+		goto put_inode;
+	}
 
 	if (inode->i_nlink == 0) {
 		if (trans->block_rsv)
@@ -2653,6 +2660,8 @@ static int __slr_reconcile_unlink_do(struct btrfs_trans_handle * trans,
 		BUG_ON(err);
 	}
 
+put_inode:
+	iput(inode);
 	return err;
 }
 
