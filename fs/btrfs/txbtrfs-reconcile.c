@@ -60,9 +60,10 @@ slr_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
 #define BTRFS_SLR_DBG_FILE(file_ptr) do {} while (0)
 #endif /* __TXBTRFS_DEBUG_SLR_DBG__ */
 
+#define __TXBTRFS_DEBUG_SLR_CONFLICTS__
 #ifdef __TXBTRFS_DEBUG_SLR_CONFLICTS__
 #define BTRFS_SLR_CONFLICT(op) \
-	printk(KERN_DEBUG "<SLR-CONFLICT> " op);
+	printk(KERN_DEBUG "<SLR-CONFLICT> " op)
 
 #else
 #define BTRFS_SLR_CONFLICT(op) do {} while (0)
