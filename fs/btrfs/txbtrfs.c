@@ -1590,11 +1590,14 @@ int btrfs_acid_tx_start(struct file * file)
 	/* Okay, we are accessing a TXSV. Next step: create a snapshot for our
 	 * process, before we can go any further.
 	 */
+
+	mutex_lock(&root->fs_info->transaction_kthread_mutex);
+
 	snap = btrfs_acid_create_snapshot(sv_dentry);
 	if (IS_ERR(snap))
 	{
 		ret = PTR_ERR(snap);
-		goto out_err;
+		goto out_unlock_mutex;
 	}
 
 	/* Set the snapshot's creation time */
@@ -1602,6 +1605,9 @@ int btrfs_acid_tx_start(struct file * file)
 
 	/* The snapshot is created, added to the tree, everything is either
 	 * fine or not. Anyway, we have nothing else to do, so we return. */
+
+out_unlock_mutex:
+	mutex_unlock(&root->fs_info->transaction_kthread_mutex);
 
 out:
 	/* If snap is not-NULL, then we have created a snapshot; if it is NULL,
@@ -2537,6 +2543,7 @@ int btrfs_acid_tx_commit(struct file * file)
 		goto out;
 
 	/* Only one transaction may commit at a time */
+	mutex_lock(&fs_info->transaction_kthread_mutex);
 	mutex_lock(&ctl->commit_mutex);
 
 	__commit_print_sets(snap);
@@ -2586,6 +2593,7 @@ int btrfs_acid_tx_commit(struct file * file)
 
 out_unlock:
 	mutex_unlock(&ctl->commit_mutex);
+	mutex_unlock(&fs_info->transaction_kthread_mutex);
 out:
 	dput(file_dentry);
 	dput(parent_dentry);

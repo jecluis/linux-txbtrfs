@@ -32,6 +32,7 @@
 
 #ifdef __TXBTRFS_DEBUG__
 
+#ifdef __TXBTRFS_DEBUG_SLR_DBG__
 static inline void
 slr_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
 {
@@ -53,15 +54,19 @@ slr_print_dbg_file(const char * function, struct btrfs_acid_log_file * file)
 #define BTRFS_SLR_DBG_FILE(file_ptr) \
 	slr_print_dbg_file(__FUNCTION__, file_ptr)
 
-//#define BTRFS_SLR_CONFLICT(op, fmt, args...) \
-//	printk(KERN_DEBUG "<SLR-CONFLICT> <" op "> " fmt, ## args)
-#define BTRFS_SLR_CONFLICT(op) \
-	printk(KERN_DEBUG "<SLR-CONFLICT> " op);
-
 #else
 #define BTRFS_SLR_DBG(fmt, args...) do {} while (0)
 #define BTRFS_SLR_PRINT(fmt, args...) do {} while (0)
 #define BTRFS_SLR_DBG_FILE(file_ptr) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_SLR_DBG__ */
+
+#ifdef __TXBTRFS_DEBUG_SLR_CONFLICTS__
+#define BTRFS_SLR_CONFLICT(op) \
+	printk(KERN_DEBUG "<SLR-CONFLICT> " op);
+
+#else
+#define BTRFS_SLR_CONFLICT(op) do {} while (0)
+#endif /* __TXBTRFS_DEBUG_SLR_CONFLICTS__ */
 #endif /* __TXBTRFS_DEBUG__ */
 
 /* this may very well be as stupid in the future as it is now, but let give
